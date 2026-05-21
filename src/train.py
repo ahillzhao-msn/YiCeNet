@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 # Add project root to path
@@ -31,15 +31,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import YiCeNetConfig
 from src.model import YiCeNet, count_parameters
-from src.data.dataset import (
-    SyntheticOrchestrationDataset,
-    RLSimulationEnv,
-)
+
+# Dataset — session-based is default; synthetic fallback kept in function body
+from src.data.dataset import SessionDataset, DataDrivenEnv
 
 
 def pretrain_stage(
     model: YiCeNet,
     config: YiCeNetConfig,
+    dataset: Optional[Dataset] = None,
     num_samples: int = 10000,
     batch_size: int = 128,
     epochs: int = 50,
@@ -62,16 +62,35 @@ def pretrain_stage(
     print("STAGE 1: Unsupervised Pre-training")
     print("=" * 60)
 
-    dataset = SyntheticOrchestrationDataset(
-        num_samples=num_samples, vocab_size=config.vocab_size,
-        max_seq_len=config.max_seq_len,
-    )
-    dataloader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, num_workers=2
-    )
+    # Use provided dataset or fall back to synthetic
+    if dataset is not None:
+        print(f"  Using real session dataset ({len(dataset)} samples)")
+        dataloader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=True, num_workers=0
+        )
+        total_features = len(dataset)
+    else:
+        # Synthetic fallback: generate random token sequences
+        print(f"  Using synthetic data ({num_samples} random samples)")
+        class _RandomDataset(Dataset):
+            def __init__(self, n, vocab, seq_len):
+                self.n = n; self.vocab = vocab; self.seq_len = seq_len
+            def __len__(self): return self.n
+            def __getitem__(self, i):
+                import random as _r
+                seq = [_r.randint(1, self.vocab - 1) for _ in range(self.seq_len)]
+                m = [1] * self.seq_len
+                return {"input_ids": torch.tensor(seq, dtype=torch.long),
+                        "attention_mask": torch.tensor(m, dtype=torch.long),
+                        "features": torch.zeros(8), "cluster_id": torch.tensor(0)}
+        syn = _RandomDataset(num_samples, config.vocab_size, min(config.max_seq_len, 16))
+        dataloader = DataLoader(
+            syn, batch_size=batch_size, shuffle=True, num_workers=0
+        )
+        total_features = num_samples
 
     # Phase 1: Collect encoder features
-    print(f"\nPhase 1: Collecting {num_samples} feature representations...")
+    print(f"\nPhase 1: Collecting {total_features} feature representations...")
     model.eval()
     all_features = []
 
@@ -98,10 +117,13 @@ def pretrain_stage(
         model.hexagram_embed.embedding.weight.copy_(centroids.to(device))
     print("  Initialized hexagram embeddings with cluster centroids.")
 
-    # Phase 3: Contrastive fine-tuning
+    # Phase 3: Contrastive fine-tuning (trains encoder + hexagram embeddings)
     print(f"\nPhase 3: Contrastive embedding fine-tuning ({epochs} epochs)...")
+    # Train both the encoder AND hexagram embeddings so the encoder learns
+    # to produce meaningful representations of BPE-tokenized input
     optimizer = torch.optim.AdamW(
-        model.hexagram_embed.parameters(), lr=lr, weight_decay=1e-5
+        list(model.encoder.parameters()) +
+        list(model.hexagram_embed.parameters()), lr=lr, weight_decay=1e-5
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs
@@ -137,7 +159,8 @@ def pretrain_stage(
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
-                model.hexagram_embed.parameters(), 1.0
+                list(model.hexagram_embed.parameters()) +
+                list(model.encoder.parameters()), 1.0
             )
             optimizer.step()
 
@@ -209,6 +232,7 @@ def kmeans_clustering(
 def rl_train_stage(
     model: YiCeNet,
     config: YiCeNetConfig,
+    env: Optional[object] = None,
     episodes: int = 5000,
     batch_size: int = 64,
     lr: float = 3e-4,
@@ -230,7 +254,11 @@ def rl_train_stage(
     print("STAGE 2: RL Fine-tuning (REINFORCE)")
     print("=" * 60)
 
-    env = RLSimulationEnv(seed=42)
+    # Use provided data-driven env or fall back to random simulation
+    from src.data.dataset import _random_env_fallback
+    env = env or _random_env_fallback()
+    if isinstance(env, DataDrivenEnv):
+        print(f"  Using real session environment ({len(env.samples)} samples)")
 
     # Optimizer: only train router + value network + action decoder
     # Keep encoder and hexagram embeddings frozen during initial RL
@@ -411,6 +439,9 @@ def main():
     )
     parser.add_argument("--num_samples", type=int, default=10000,
                         help="Synthetic samples for pretrain")
+    parser.add_argument("--dataset", type=str, default="session",
+                        choices=["synthetic", "session"],
+                        help="Training data source: synthetic (25 hardcoded scenarios) or session (real Hermes logs)")
     parser.add_argument("--episodes", type=int, default=5000,
                         help="RL episodes")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -441,6 +472,17 @@ def main():
     # Model
     model = YiCeNet(config).to(device)
     counts = count_parameters(model, verbose=True)
+
+    # Create dataset & env based on --dataset flag
+    session_dataset = None
+    rl_env = None
+    if args.dataset == "session":
+        print("\nLoading session dataset...")
+        session_dataset = SessionDataset(max_seq_len=config.max_seq_len)
+        rl_env = DataDrivenEnv(session_dataset, seed=args.seed)
+        print(f"  RL env: {len(session_dataset)} samples available")
+    else:
+        print("\nUsing synthetic dataset (25 hardcoded scenarios)")
 
     # Dry-run: just verify model works end-to-end
     if args.stage == "dry-run":
@@ -489,6 +531,7 @@ def main():
         pretrain_stage(
             model=model,
             config=config,
+            dataset=session_dataset,
             num_samples=args.num_samples,
             batch_size=args.batch_size,
             epochs=args.pretrain_epochs,
@@ -519,6 +562,7 @@ def main():
         rl_train_stage(
             model=model,
             config=config,
+            env=rl_env,
             episodes=args.episodes,
             batch_size=args.batch_size,
             lr=args.lr,

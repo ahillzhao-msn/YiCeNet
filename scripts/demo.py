@@ -20,6 +20,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.model import YiCeNet
 from src.config import YiCeNetConfig
+from src.tokenizer import encode as yicenet_encode
 
 # ── Hexagram names (King Wen order) ──
 HEXAGRAM_NAMES = [
@@ -129,18 +130,9 @@ def demo_single(model: YiCeNet, device: str, input_ids, attention_mask, label: s
 
 
 def generate_scenario_input(text: str, config: YiCeNetConfig, device: str):
-    """Generate tokenized input from a text description."""
-    # Simple hash-based tokenization for demo
-    # In production, use a real BPE tokenizer
-    seq_len = min(len(text) + 4, config.max_seq_len)
-    token_ids = [(hash(f"{text}_{i}") % (config.vocab_size - 1)) + 1
-                 for i in range(seq_len)]
-    while len(token_ids) < config.max_seq_len:
-        token_ids.append(0)
-    mask = [1] * seq_len + [0] * (config.max_seq_len - seq_len)
-
-    return (torch.tensor([token_ids], device=device),
-            torch.tensor([mask], device=device))
+    """Generate tokenized input from a text description using Qwen BPE."""
+    input_ids, mask = yicenet_encode(text, max_len=config.max_seq_len)
+    return input_ids.to(device), mask.to(device)
 
 
 def main():

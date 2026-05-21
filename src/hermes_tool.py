@@ -16,7 +16,8 @@ import os
 import sys
 
 # Add YiCeNet project to path
-_YICENET_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Use realpath to follow symlink to actual file location
+_YICENET_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if _YICENET_ROOT not in sys.path:
     sys.path.insert(0, _YICENET_ROOT)
 
@@ -29,7 +30,18 @@ def _get_engine():
     global _engine
     if _engine is None:
         from src.yicenet_engine import YiCeNetEngine
-        ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_rl_best.pt")
+        # Read active checkpoint from registry
+        reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+        ckpt = ""
+        if os.path.exists(reg_path):
+            try:
+                with open(reg_path) as f:
+                    reg = json.load(f)
+                ckpt = reg.get("active", {}).get("path", "")
+            except Exception:
+                pass
+        if not ckpt or not os.path.exists(ckpt):
+            ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_rl_best.pt")
         _engine = YiCeNetEngine(checkpoint=ckpt, project_root=_YICENET_ROOT)
     return _engine
 
@@ -88,6 +100,14 @@ def check_yicenet_requirements() -> bool:
     """Check if YiCeNet can run."""
     try:
         import torch
+        # Check registry first, then fallback
+        reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+        if os.path.exists(reg_path):
+            with open(reg_path) as f:
+                reg = json.load(f)
+            active_path = reg.get("active", {}).get("path", "")
+            if active_path and os.path.exists(active_path):
+                return True
         ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_rl_best.pt")
         return os.path.exists(ckpt)
     except ImportError:

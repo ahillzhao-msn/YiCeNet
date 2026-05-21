@@ -1,257 +1,420 @@
 """
-Synthetic data generator for YiCeNet pre-training and RL training.
+Session dataset for YiCeNet — extracts real conversation data from Hermes session DB.
 
-Generates realistic orchestration traces simulating Hermes behavior:
-- User intents (diverse orchestration scenarios)
-- Execution outcomes (success/timing)
-- Session patterns (continuation/abandonment)
-
-This enables offline pre-training before real data accumulation.
+Each sample = one user message → corresponding assistant response.
+Features extracted for world model:
+  - text: user message (input to YiCeNet encoder)
+  - token_cost: session-level avg tokens per message
+  - success: 1 if conversation continued (user sent another message after assistant reply)
+  - abandoned: 1 if user stopped talking after this exchange
+  - corrected: 1 if user sent a correction/rebuke within next 2 messages
+  - completion: 1 if the session naturally ended with a task done signal
 """
 
+import json
+import os
+import sqlite3
 import random
+from collections import OrderedDict
+from pathlib import Path
+from typing import Optional
+
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
+from src.tokenizer import encode
 
-# ── Pre-tokenized orchestration scenarios ──
-# Each is a (tokens, success_rate, latency_score) tuple
-# tokens are random ints in [1, vocab_size-1] representing BPE tokens
+_YICENET_ROOT = Path(__file__).parent.parent
+DB_PATH = str(Path.home() / ".hermes" / "state.db")
 
-ORCHESTRATION_SCENARIOS = [
-    # Intent description, typical success rate, avg latency impact
-    ("search knowledge base", 0.95, 0.3),
-    ("route to multiple APIs and merge", 0.85, 0.7),
-    ("sequential API call chain", 0.90, 0.5),
-    ("conditional branching based on query type", 0.88, 0.4),
-    ("parallel data fetch then aggregate", 0.82, 0.6),
-    ("user intent classification first", 0.93, 0.2),
-    ("retrieve context then generate response", 0.91, 0.5),
-    ("caching layer lookup with fallback", 0.97, 0.1),
-    ("multi-step form wizard", 0.78, 0.8),
-    ("monitor and poll for completion", 0.75, 0.9),
-    ("fan-out to 3 services then merge", 0.80, 0.7),
-    ("select best model based on query", 0.89, 0.3),
-    ("extract entities then query database", 0.87, 0.5),
-    ("summarize long document", 0.86, 0.6),
-    ("translate then format output", 0.94, 0.4),
-    ("validate input then process", 0.92, 0.2),
-    ("stream response with progress updates", 0.83, 0.7),
-    ("load balance across workers", 0.96, 0.2),
-    ("retry with backoff on failure", 0.71, 0.9),
-    ("orchestrate sub-agent delegation", 0.79, 0.8),
-    ("tool selection from registry", 0.90, 0.3),
-    ("schedule recurring task", 0.88, 0.5),
-    ("chain of thought before answering", 0.84, 0.6),
-    ("context window management", 0.93, 0.2),
-    ("error recovery with graceful degradation", 0.72, 0.8),
+# ── Correction keywords (user signal detection) ──
+# Full-word/substring patterns. Avoid single Chinese chars that
+# appear in normal text ("不", "错" are too broad).
+CORRECTION_PATTERNS = [
+    # Chinese — two+ character patterns only
+    "不对", "不是的", "错了", "不对的",
+    "重新来", "再来", "搞错了",
+    "你理解错了", "你错了", "我说的是",
+    "不是这样", "不是那个",
+    # English
+    " that's not", "that is not", "that isn't",
+    "not what i", "wrong.", "incorrect",
+    "stop", "no!", "nope",
+    "i didn't mean", "i meant ",
+    # Mixed signals
+    "听错了",
 ]
 
+# Short messages (≤15 chars) that are likely corrections
+SHORT_CORRECTION_TRIGGERS = {
+    "no", "不", "不对", "不是", "错了", "stop", "no!", "wrong",
+    "重新", "再来", "重来", "不是的",
+}
 
-class SyntheticOrchestrationDataset(Dataset):
+
+def _detect_correction(text: str) -> bool:
+    """Heuristic: check if user message is a correction."""
+    text_lower = text.lower().strip()
+
+    # Super-short messages (1-3 chars) — likely corrections
+    if len(text_lower) <= 3:
+        return text_lower in {"no", "不", "不对", "不是", "错了", "stop"}
+
+    # Pattern matches
+    for pat in CORRECTION_PATTERNS:
+        if pat in text_lower:
+            return True
+
+    return False
+
+
+def _detect_completion(text: str) -> bool:
+    """Heuristic: check if session end sounds like completion."""
+    text_lower = text.lower().strip()
+    endings = [
+        "完毕", "完成", "好", "好的", "谢谢", "thanks",
+        "done", "complete", "finished", "that's all",
+        "就这样", "没有别的了", "ok", "okay", "行了",
+    ]
+    return any(text_lower.startswith(e) or text_lower == e for e in endings)
+
+
+class SessionDataset(Dataset):
     """
-    Generate synthetic orchestration traces for pre-training.
+    Extract labeled (user_message, features) pairs from Hermes session DB.
 
-    Each sample:
-      - input_ids: tokenized intent description
+    Each item:
+      - text: user message string
+      - input_ids: YiCeNet token IDs (Qwen BPE → rebucketed)
       - attention_mask: padding mask
-      - features: 8-dim feature vector for clustering
-          [success_rate, latency, complexity, parallel_degree,
-           sequential_depth, cache_hit, error_rate, diversity]
-      - cluster_target: (optional) ground-truth hexagram cluster assignment
+      - features: 8-dim vector [success_rate, latency, complexity, ...]
+      - reward: calibrated reward = success_bonus - token_penalty - correction_penalty
+      - terminal_type: 'active', 'success', 'abandoned', 'corrected'
+
+    Length: number of user messages (excluding the last one of each session,
+    which has no follow-up for reward calculation)
     """
 
     def __init__(
         self,
-        num_samples: int = 10000,
-        vocab_size: int = 8000,
-        max_seq_len: int = 32,
-        seed: int = 42,
+        db_path: str = DB_PATH,
+        max_seq_len: int = 128,
+        min_session_length: int = 2,
+        include_corrections: bool = True,
+        reward_coefficients: Optional[dict] = None,
     ):
-        self.num_samples = num_samples
-        self.vocab_size = vocab_size
+        """
+        Args:
+            db_path: path to Hermes state.db
+            max_seq_len: max tokenization length
+            min_session_length: skip sessions with fewer user messages than this
+            include_corrections: if True, include samples where user corrects
+            reward_coefficients: override default reward weights
+        """
         self.max_seq_len = max_seq_len
-        self.seed = seed
-        self.rng = random.Random(seed)
+        self.reward_coef = reward_coefficients or {
+            "success_bonus": 0.8,          # +0.8 when user continues
+            "correction_penalty": -1.0,    # -1.0 when user corrects
+            "abandon_penalty": -2.0,        # -2.0 when user abandons
+            "completion_bonus": 0.5,        # +0.5 when task completes
+            "token_cost_weight": -0.0003,    # ~0.5 avg penalty at 1815 tok/sample
+        }
 
-        # Generate scenarios for each sample
-        self.scenarios = []
-        for _ in range(num_samples):
-            scenario = self.rng.choice(ORCHESTRATION_SCENARIOS)
-            self.scenarios.append(scenario)
+        # Extract from DB
+        self.samples = self._extract(
+            db_path, min_session_length, include_corrections
+        )
+        print(f"[SessionDataset] Loaded {len(self.samples)} samples from {db_path}")
+
+    def _extract(
+        self, db_path: str, min_len: int, include_corrections: bool
+    ) -> list[dict]:
+        """Extract labeled sample pairs from session DB."""
+        conn = sqlite3.connect(db_path)
+        samples = []
+
+        # Get all session IDs with user+assistant pairs
+        sessions = conn.execute("""
+            SELECT id, input_tokens, output_tokens, message_count,
+                   title
+            FROM sessions
+            WHERE input_tokens IS NOT NULL
+            ORDER BY started_at
+        """).fetchall()
+
+        for session_id, inp_tok, out_tok, msg_count, title in sessions:
+            # Get all messages in order
+            msgs = conn.execute("""
+                SELECT id, role, content, timestamp
+                FROM messages
+                WHERE session_id = ? AND role IN ('user', 'assistant')
+                ORDER BY timestamp
+            """, (session_id,)).fetchall()
+
+            if len(msgs) < min_len * 2:  # at least min_len user messages
+                continue
+
+            # Calculate per-message token cost
+            total_tokens = (inp_tok or 0) + (out_tok or 0)
+            per_msg_cost = total_tokens / max(len(msgs), 1)
+
+            # Walk through user→assistant pairs
+            i = 0
+            while i < len(msgs) - 1:
+                if msgs[i][1] != "user":
+                    i += 1
+                    continue
+                if msgs[i + 1][1] != "assistant":
+                    i += 1
+                    continue
+
+                user_msg = msgs[i]
+                asst_msg = msgs[i + 1]
+                user_text = user_msg[2] or ""
+                asst_text = asst_msg[2] or ""
+
+                if len(user_text.strip()) < 3:
+                    i += 1
+                    continue
+
+                # Skip system-generated user messages (context compaction, etc.)
+                if user_text.startswith(("[CONTEXT", "[SYSTEM", "SYSTEM:", "[Note:")):
+                    i += 1
+                    continue
+
+                # Determine what happens next
+                # Look at the NEXT user message (if any) for reward signal
+                next_user_idx = None
+                for j in range(i + 2, len(msgs)):
+                    if msgs[j][1] == "user":
+                        next_user_idx = j
+                        break
+
+                terminal_type = "active"
+                reward = 0.0
+                corrected = False
+                abandoned = False
+                completed = False
+
+                if next_user_idx is not None:
+                    next_text = msgs[next_user_idx][2] or ""
+                    if _detect_correction(next_text):
+                        corrected = True
+                        terminal_type = "corrected"
+                    elif _detect_completion(next_text):
+                        completed = True
+                        terminal_type = "success"
+                    else:
+                        # User continues normally
+                        terminal_type = "active"
+                else:
+                    # No follow-up — abandoned or completed
+                    if user_text and _detect_completion(user_text):
+                        completed = True
+                        terminal_type = "success"
+                    else:
+                        abandoned = True
+                        terminal_type = "abandoned"
+
+                # Compute reward
+                token_penalty = self.reward_coef["token_cost_weight"] * per_msg_cost
+                reward = (
+                    (self.reward_coef["success_bonus"] if terminal_type == "active" else 0.0)
+                    + (self.reward_coef["correction_penalty"] if corrected else 0.0)
+                    + (self.reward_coef["abandon_penalty"] if abandoned else 0.0)
+                    + (self.reward_coef["completion_bonus"] if completed else 0.0)
+                    + token_penalty
+                )
+
+                # Build feature vector (similar to original 8-dim but data-driven)
+                complexity = min(1.0, len(user_text) / 500.0)  # text length as proxy
+                success_rate = 0.0 if corrected or abandoned else 0.8
+                if completed:
+                    success_rate = 0.95
+                elif terminal_type == "active":
+                    success_rate = 0.7 + 0.3 * random.random()  # slight variance
+
+                features = torch.tensor([
+                    success_rate,                                          # 0: success_rate
+                    min(1.0, per_msg_cost / 5000.0),                       # 1: latency proxy
+                    complexity,                                            # 2: complexity
+                    min(1.0, len(msgs) / 100.0),                           # 3: parallel_degree
+                    min(1.0, (i // 2) / 50.0),                             # 4: sequential_depth
+                    0.0 if corrected else (0.3 + 0.3 * random.random()),   # 5: cache_hit
+                    0.2 if corrected or abandoned else 0.05,               # 6: error_rate
+                    0.5 + 0.3 * random.random(),                           # 7: diversity
+                ], dtype=torch.float32)
+
+                samples.append({
+                    "text": user_text,
+                    "user_msg_id": user_msg[0],
+                    "session_id": session_id,
+                    "features": features,
+                    "reward": reward,
+                    "terminal_type": terminal_type,
+                    "corrected": corrected,
+                    "abandoned": abandoned,
+                    "completed": completed,
+                    "token_cost": per_msg_cost,
+                })
+
+                i += 1  # Skip the assistant message we just consumed
+                if not include_corrections and corrected:
+                    # Remove the last added sample
+                    samples.pop()
+                    # But we already appended... skip in next iteration
+
+        conn.close()
+        return samples
 
     def __len__(self):
-        return self.num_samples
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        text, success_rate, latency = self.scenarios[idx]
+        sample = self.samples[idx]
 
-        # Simple tokenization: hash-based pseudo-token IDs
-        # In production, use a real tokenizer
-        token_ids = [
-            (hash(f"{text}_{i}") % (self.vocab_size - 1)) + 1
-            for i in range(min(len(text), self.max_seq_len))
-        ]
-        # Ensure minimum length of 4
-        while len(token_ids) < 4:
-            token_ids.append(self.rng.randint(1, self.vocab_size - 1))
-
-        seq_len = len(token_ids)
-        attention_mask = [1] * seq_len
-
-        # Pad
-        if seq_len < self.max_seq_len:
-            pad_len = self.max_seq_len - seq_len
-            token_ids = token_ids + [0] * pad_len
-            attention_mask = attention_mask + [0] * pad_len
-
-        # Feature vector for clustering (8-dim)
-        complexity = self.rng.uniform(0.2, 1.0)
-        parallel_degree = self.rng.randint(1, 5)
-        sequential_depth = self.rng.randint(1, 6)
-        cache_hit = self.rng.random()
-        error_rate = 1.0 - success_rate
-        diversity = self.rng.uniform(0.1, 0.9)
-
-        features = torch.tensor([
-            success_rate,
-            latency,
-            complexity,
-            parallel_degree / 5.0,
-            sequential_depth / 5.0,
-            cache_hit,
-            error_rate,
-            diversity,
-        ], dtype=torch.float32)
-
-        # Ground-truth cluster: simplified — group by latency buckets
-        # In production this comes from real traces
-        cluster_id = min(int(latency * 64), 63)
+        # Tokenize with Qwen BPE → YiCeNet rebucket
+        input_ids, attention_mask = encode(
+            sample["text"], max_len=self.max_seq_len
+        )
 
         return {
-            "input_ids": torch.tensor(token_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
-            "features": features,
-            "cluster_id": torch.tensor(cluster_id, dtype=torch.long),
-            "text": text,
+            "input_ids": input_ids.squeeze(0),
+            "attention_mask": attention_mask.squeeze(0),
+            "features": sample["features"],
+            "reward": torch.tensor(sample["reward"], dtype=torch.float32),
+            "terminal_type": sample["terminal_type"],
+            "text": sample["text"],
+            "token_cost": sample["token_cost"],
+        }
+
+    def get_session_stats(self) -> dict:
+        """Return summary statistics across all samples."""
+        rewards = [s["reward"] for s in self.samples]
+        types = [s["terminal_type"] for s in self.samples]
+        costs = [s["token_cost"] for s in self.samples]
+
+        return {
+            "total_samples": len(self.samples),
+            "avg_reward": sum(rewards) / max(len(rewards), 1),
+            "active_pct": types.count("active") / max(len(types), 1) * 100,
+            "corrected_pct": types.count("corrected") / max(len(types), 1) * 100,
+            "abandoned_pct": types.count("abandoned") / max(len(types), 1) * 100,
+            "success_pct": types.count("success") / max(len(types), 1) * 100,
+            "avg_token_cost": sum(costs) / max(len(costs), 1),
+            "min_reward": min(rewards),
+            "max_reward": max(rewards),
         }
 
 
-class RLSimulationEnv:
+class DataDrivenEnv:
     """
-    Lightweight simulation environment for RL training.
+    Replacement for RLSimulationEnv.
 
-    Simulates the "fortune teller—customer" interaction:
-    - Agent generates a hexagram (decision skeleton)
-    - Environment evaluates it based on simplified success/latency model
-    - Returns reward mimicking real user behavior
+    Serves pre-computed (state, reward) transitions from real session data.
+    The agent samples from real conversation traces instead of random noise.
 
-    This is a simplified world model for offline RL bootstrapping.
-    In production, this is replaced by a learned world model
-    trained on real Hermes execution logs.
+    This is a "world model" of the simplest form: empirical replay.
     """
 
-    def __init__(self, seed: int = 42):
+    def __init__(
+        self,
+        dataset: SessionDataset,
+        seed: int = 42,
+    ):
         self.rng = random.Random(seed)
-        self.session_active = True
+        self.samples = dataset.samples
+        self.rng.shuffle(self.samples)
+        self._position = 0
+        self.current_sample = None
         self.step_count = 0
-        self.max_steps = self.rng.randint(3, 10)
-        self.current_reward = 0.0
+        self.max_steps = 10
 
     def reset(self) -> dict:
-        """Reset environment for a new episode. Returns initial state."""
-        self.session_active = True
+        """Reset and return initial state from a random sample."""
+        self._position = (self._position + 1) % len(self.samples)
+        self.current_sample = self.samples[self._position]
         self.step_count = 0
-        self.max_steps = self.rng.randint(3, 10)
-        self.current_reward = 0.0
+        self.max_steps = self.rng.randint(3, 8)
 
-        # Generate random initial state features
         state = {
-            "success_rate": self.rng.uniform(0.6, 0.95),
-            "latency": self.rng.uniform(0.1, 0.9),
-            "complexity": self.rng.uniform(0.2, 0.8),
-            "parallel_degree": self.rng.randint(1, 4),
-            "session_depth": self.step_count / self.max_steps,
+            "success_rate": self.current_sample["features"][0].item(),
+            "latency": self.current_sample["features"][1].item(),
+            "complexity": self.current_sample["features"][2].item(),
+            "parallel_degree": int(self.current_sample["features"][3].item() * 4 + 1),
+            "session_depth": 0.0,
             "user_engagement": 1.0,
-            "token_cost": self.rng.uniform(0.0, 0.3),
+            "token_cost": self.current_sample["token_cost"],
+            "text": self.current_sample["text"],
         }
         return state
 
     def step(self, hexagram_id: int) -> tuple[dict, float, bool, str]:
         """
-        Take a step with the chosen hexagram.
+        Advance one step.
 
-        Args:
-            hexagram_id: hexagram index 0-63
-
-        Returns:
-            next_state: dict of new state features
-            reward: scalar reward
-            done: whether session is done
-            terminal_type: why the episode ended (when done=True)
-                          "active" (not done), "success" (completed),
-                          "abandoned" (user left), "timeout" (max steps)
+        Returns real reward from session data + next state.
         """
         self.step_count += 1
+        sample = self.current_sample
+        reward = sample["reward"]
+        terminal_type = sample["terminal_type"]
 
-        # Simulate execution outcome based on hexagram quality
-        yangness = bin(hexagram_id).count("1") / 6.0
+        # Session end conditions
+        done = (
+            self.step_count >= self.max_steps
+            or terminal_type == "success"
+            or terminal_type == "abandoned"
+        )
 
-        # Success probability: moderate yangness is often best (中庸之道)
-        success_prob = 0.5 + 0.5 * (1.0 - abs(yangness - 0.5) * 2.0)
-        success = self.rng.random() < success_prob
-
-        # Latency: bolder (more yang) = faster but riskier
-        latency = 0.3 + 0.6 * (1.0 - yangness)
-        token_cost = 0.1 + 0.3 * (1.0 - yangness)
-
-        # User engagement: drops with failures
-        engagement_decay = 0.2 if not success else 0.02
-
-        # Determine termination type and reward
-        timeout = self.step_count >= self.max_steps
-        abandon = not success and self.rng.random() < 0.3
-        done = timeout or abandon
-
-        # ── Disambiguated reward ──
-        # Natural end (success): neutral-to-positive reward
-        # Abandonment: strong negative penalty
-        # Mid-session: based on success + continuation
-
-        terminal_type = "active"
-
-        if done and timeout and success:
-            # Task completed naturally — slight positive for efficiency
-            reward = 2.0 - 0.5 * token_cost - 0.3 * latency
-            terminal_type = "success"
-        elif done and timeout and not success:
-            # Timeout with failures — negative but not abandonment
-            reward = -0.5 - 0.5 * token_cost - 0.3 * latency
-            terminal_type = "timeout"
-        elif done and abandon:
-            # User explicitly left after failure — strongest penalty
-            reward = -2.0 - 0.5 * token_cost - 0.3 * latency
-            terminal_type = "abandoned"
-        else:
-            # Mid-session step
-            continue_bonus = 1.0 if success else -0.5
-            reward = (
-                + 1.0 * int(success)
-                + continue_bonus
-                - 0.5 * token_cost
-                - 0.3 * latency
-            )
-
-        # Build next state
+        # Next state (advance to next sample in same session, or reset)
+        next_idx = (self._position + 1) % len(self.samples)
+        next_sample = self.samples[next_idx]
         next_state = {
-            "success_rate": 0.7 + 0.3 * success,
-            "latency": latency,
-            "complexity": self.rng.uniform(0.2, 0.8),
-            "parallel_degree": self.rng.randint(1, 4),
-            "session_depth": self.step_count / self.max_steps,
-            "user_engagement": max(0.0, 1.0 - engagement_decay * self.step_count),
-            "token_cost": token_cost,
-            "terminal_type": terminal_type if done else "active",
+            "success_rate": next_sample["features"][0].item(),
+            "latency": next_sample["features"][1].item(),
+            "complexity": next_sample["features"][2].item(),
+            "parallel_degree": int(next_sample["features"][3].item() * 4 + 1),
+            "session_depth": self.step_count / max(self.max_steps, 1),
+            "user_engagement": max(0.0, 1.0 - 0.1 * self.step_count),
+            "token_cost": next_sample["token_cost"],
+            "text": next_sample["text"],
         }
 
+        self.current_sample = next_sample
+        self._position = next_idx
+
         return next_state, reward, done, terminal_type
+
+
+# ── Backward-compatible fallback for --dataset synthetic ──
+
+class _RandomEnv:
+    """Minimal random env for backward compat with --dataset synthetic."""
+    def __init__(self, seed=42):
+        import random
+        self.rng = random.Random(seed)
+        self.step_count = 0
+    def reset(self):
+        self.step_count = 0
+        return {"success_rate": 0.7, "latency": 0.3, "complexity": 0.5,
+                "parallel_degree": 2, "session_depth": 0.0, "user_engagement": 1.0,
+                "token_cost": 100.0, "text": "fallback"}
+    def step(self, hexagram_id):
+        self.step_count += 1
+        done = self.step_count >= 5
+        return (self.reset(), -0.5 if done else 0.0, done, "timeout" if done else "active")
+
+def _random_env_fallback():
+    return _RandomEnv()
+
+
+# ── Quick test ──
+if __name__ == "__main__":
+    ds = SessionDataset()
+    stats = ds.get_session_stats()
+    print(f"\nSession stats:")
+    for k, v in stats.items():
+        print(f"  {k}: {v:.2f}" if isinstance(v, float) else f"  {k}: {v}")
+    print(f"\nSample 0: {ds[0]['text'][:60]}...")
+    print(f"  reward={ds[0]['reward']:.3f}, type={ds[0]['terminal_type']}")

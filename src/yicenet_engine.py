@@ -20,11 +20,28 @@ Usage:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn.functional as F
+
+# ── Real Qwen BPE tokenizer ──
+from .tokenizer import encode as yicenet_encode, build_vocab
+
+# Check if vocab exists, build if not
+_VOCAB_CHECKED = False
+def _ensure_vocab():
+    global _VOCAB_CHECKED
+    if _VOCAB_CHECKED:
+        return
+    map_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "data", "qwen_to_yicenet.json")
+    if not os.path.exists(map_path):
+        print("[YiCeNet] Building vocabulary from session DB...")
+        build_vocab()
+    _VOCAB_CHECKED = True
 
 # ── Hexagram names ──
 HEXAGRAM_NAMES = [
@@ -83,11 +100,9 @@ class YiCeNetEngine:
         if not project_root:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._project_root = project_root
-
         if not checkpoint:
-            default_ckpt = os.path.join(project_root, "checkpoints", "yicenet_rl_best.pt")
-            if os.path.exists(default_ckpt):
-                self._checkpoint = default_ckpt
+            # Don't set default here — let _lazy_load check registry.json first
+            pass
 
     def _resolve_device(self) -> str:
         if self._device == "auto":
@@ -95,22 +110,22 @@ class YiCeNetEngine:
         return self._device
 
     def _lazy_load(self):
+        """Load model on first use with registry-aware fallback."""
         if self._model is not None:
             return
 
         device = self._resolve_device()
         ckpt = self._checkpoint
 
-        # If no checkpoint specified, try registry.json
+        # If no explicit checkpoint, try registry.json
         if not ckpt:
             reg_path = os.path.join(self._project_root, "checkpoints", "registry.json")
             if os.path.exists(reg_path):
                 try:
                     with open(reg_path) as f:
                         reg = json.load(f)
-                    if reg.get("active") and os.path.exists(reg["active"]["path"]):
-                        ckpt = reg["active"]["path"]
-                except (json.JSONDecodeError, KeyError):
+                    ckpt = reg.get("active", {}).get("path", "")
+                except Exception:
                     pass
 
         # Default fallback
@@ -121,10 +136,11 @@ class YiCeNetEngine:
 
         if not ckpt or not os.path.exists(ckpt):
             raise FileNotFoundError(
-                f"YiCeNet checkpoint not found: {ckpt}. "
+                f"YiCeNet checkpoint not found. "
                 "Set checkpoint path or run training first."
             )
 
+        # Import here to avoid top-level dependency on heavy libs
         sys.path.insert(0, self._project_root)
         from src.model import YiCeNet
         from src.config import YiCeNetConfig
@@ -167,18 +183,17 @@ class YiCeNetEngine:
                 action_id, action_name, q_values, temperature, deterministic
         """
         self._lazy_load()
+        _ensure_vocab()
 
         config = self._config
         device = next(self._model.parameters()).device
-        max_len = config.max_seq_len
-        seq_len = min(len(text) + 4, max_len)
-        token_ids = [(hash(f"{text}_{i}") % (config.vocab_size - 1)) + 1
-                     for i in range(seq_len)]
-        token_ids = token_ids + [0] * (max_len - seq_len)
-        mask = [1] * seq_len + [0] * (max_len - seq_len)
 
-        input_ids = torch.tensor([token_ids], device=device)
-        attention_mask = torch.tensor([mask], device=device)
+        # ── REAL BPE tokenization ──
+        input_ids, attention_mask = yicenet_encode(
+            text, max_len=config.max_seq_len
+        )
+        input_ids = input_ids.to(device)
+        attention_mask = attention_mask.to(device)
 
         with torch.no_grad():
             # Encode context
