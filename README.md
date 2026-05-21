@@ -1,187 +1,123 @@
 # YiCeNet (易策网络)
 
-**~5.6M params | ~22MB | ~4ms inference | I-Ching-inspired orchestration engine**
+I-Ching-inspired tiny neural network for orchestration task decomposition.
 
-A lightweight neural network that encodes the I Ching (易经) philosophical framework — controlled randomness + strong logical reasoning — as a fast decomposition engine for AI orchestration systems. Designed for **Hermes Agent** but deployable as a standalone service.
+**~5.6M parameters, ~21MB FP32, ~4ms GPU inference.**
 
----
+## Quick Start
 
-## Philosophy → Code
+```bash
+git clone https://github.com/ahillzhao-msn/YiCeNet.git
+cd YiCeNet
+pip install torch transformers tqdm numpy
+```
 
-| I Ching | Engineering |
-|---|---|
-| 太极 (Taiji) | 256-dim state vector encoding user intent |
-| 两仪 (Yin-Yang) | Binary decision nodes |
-| 八卦 (8 Trigrams) | 8 prototype orchestration capabilities |
-| 六十四卦 (64 Hexagrams) | 64 orchestration scenario patterns (learned) |
-| 起卦 (Divination) | Gumbel-Softmax sampling for controlled exploration |
-| 错综互变 | Deterministic structural reasoning (0 params, fixed logic) |
-| 卦爻辞 (Judgment) | Value network scoring candidates |
+### Option A: Download pre-trained weights (recommended)
 
----
+```bash
+# Download v4 release
+curl -L -o yicenet_v4.tar.gz \
+  https://github.com/ahillzhao-msn/YiCeNet/releases/download/v4/yicenet_v4_release.tar.gz
+tar xzf yicenet_v4.tar.gz
+
+# Verify files exist
+ls checkpoints/yicenet_v4.pt    # main model (~22MB)
+ls checkpoints/world_model_best.pt  # world model (~200KB)
+ls data/qwen_to_yicenet.json    # BPE token mapping
+
+# Build registry.json for inference
+echo '{"active":{"version":"v4","path":"'$(pwd)'/checkpoints/yicenet_v4.pt"}}' \
+  > checkpoints/registry.json
+
+# Run demo
+python scripts/demo.py --scenario "search knowledge base for SAP PM"
+```
+
+### Option B: Train from scratch
+
+```bash
+# Build vocabulary from your own Hermes session data
+python src/tokenizer.py
+
+# Full training pipeline (pre-train + RL)
+python src/train.py --dataset session --stage all --episodes 500 --pretrain_epochs 50
+
+# Or step by step:
+python src/train.py --dataset session --stage pretrain --pretrain_epochs 80   # K-means + contrastive
+python src/world_model.py                                                      # Train world model
+python src/rl_train.py --episodes 1000                                         # RL fine-tune
+```
 
 ## Architecture
 
 ```
-Input → TinyEncoder (5.3M) → h (256-dim)
-    → GumbelRouter → hexagram (0-63)
-    → Hexagram Embedding (64×256)
-    → 错/综/互/变 (8 candidates, fixed logic)
-    → Value Network → Q-values → select best
-    → Action Decoder → action (1 of 50)
+Input (Qwen BPE tokens, 8000 vocab) → TinyEncoder (4×Transformer, 256-dim)
+  → Gumbel Router → hexagram index (0-63)
+  → Hexagram Embedding (64×256)
+  → Structural Reasoning (错/综/互/变) → 8 candidates
+  → Value Network → Q-values
+  → Action Decoder → orchestration action
 ```
 
-## Quick Start
+## Training
 
-### Docker (cross-host deployment)
+The model is trained in three stages:
 
-```bash
-# Clone
-git clone https://github.com/<your-org>/YiCeNet.git
-cd YiCeNet
+| Stage | What | Data |
+|-------|------|------|
+| **1. Pre-train** | K-means + contrastive loss on encoder | 665 real session messages |
+| **2. World Model** | Supervised regression: (h, hex) → reward | 5,320 (h, hex, reward) pairs |
+| **3. RL** | REINFORCE with world model as reward signal | 1,000 episodes |
 
-# Build & start
-docker compose up -d
+**Pre-trained weights** ([v4 release](https://github.com/ahillzhao-msn/YiCeNet/releases/tag/v4)) 
+are trained on the author's personal Hermes session data (~665 Chinese/English technical 
+conversations about SAP ABAP, system administration, and ML training). The tokenizer 
+(Qwen BPE) is universal, but the hexagram preferences are personalized. 
+**For best results on your own data, retrain Stage 2+3 with your session logs.**
 
-# Service is now available at:
-#   http://localhost:8001/v1/health    — health check
-#   http://localhost:8001/v1/predict   — inference
-#   http://localhost:8501              — dashboard
+## Inference
 
-# Train a model first
-docker exec yicenet-api python scripts/training_worker.py --once
+```python
+from src.yicenet_engine import YiCeNetEngine
+
+engine = YiCeNetEngine(project_root=".")
+result = engine.predict("search knowledge base", temperature=0.1)
+print(result["hexagram_name"], result["action_name"])
 ```
 
-### Local (Hermes integration)
+### Hermes Integration
 
-```bash
-# Install
-pip install -r requirements.txt
-
-# Setup Hermes tool
-ln -sf ~/YiCeNet/src/hermes_tool.py ~/.hermes/hermes-agent/tools/yicenet_tool.py
-
-# Start dashboard
-streamlit run dashboard.py --server.port 8501
-
-# Register auto-training cron (from Hermes session)
-# Follow prompts from:
-python scripts/register_hermes_cron.py
-```
-
----
-
-## Project Structure
+When used as a Hermes agent tool:
 
 ```
-YiCeNet/
-├── api.py                    # FastAPI HTTP service (cross-host Plan A)
-├── dashboard.py              # Streamlit monitoring dashboard
-├── docker-compose.yml        # Full-stack deployment
-├── Dockerfile                # API + training container
-├── Dockerfile.dashboard      # Dashboard container
-├── requirements.txt          # Python dependencies
-│
-├── src/
-│   ├── model.py              # YiCeNet full model (5.6M params)
-│   ├── encoder.py            # TinyTransformer (4 layers, 256-dim)
-│   ├── hexagram.py           # 错/综/互/变 transformations
-│   ├── config.py             # All hyperparameters
-│   ├── value_net.py          # Value network (41K params)
-│   ├── decoder.py            # Action decoder (26K params)
-│   ├── train.py              # Training pipeline (pretrain + RL)
-│   ├── yicenet_engine.py     # In-process inference engine (Plan B)
-│   ├── hermes_tool.py        # Hermes tool registration
-│   ├── metrics.py            # SQLite metrics logger
-│   └── data/
-│       └── dataset.py        # Synthetic data + RL environment
-│
-├── scripts/
-│   ├── training_worker.py    # CPU PPO training + A/B switch
-│   ├── demo.py               # Interactive inference demo
-│   ├── export_onnx.py        # ONNX export (limited by bit ops)
-│   └── register_hermes_cron.py  # Cron job setup
-│
-├── tests/
-│   └── test_model.py         # 9 tests (all passing)
-│
-└── checkpoints/              # Trained model weights
-    └── registry.json         # A/B model registry
+yicenet_predict(task_brief="search knowledge base")
+→ {"hexagram_id": 35, "hexagram_name": "晋", "action_name": "route_to_service", ...}
 ```
 
----
+Supports A/B model switching via `checkpoints/registry.json`.
 
-## API Reference
+## Files
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/v1/predict` | POST | Inference: task → hexagram + action + Q-values |
-| `/v1/switch` | POST | Hot-switch to different checkpoint |
-| `/v1/health` | GET | System health + model status |
-| `/v1/check-switch` | GET | Check A/B registry for better model |
-| `/v1/train` | POST | Trigger one PPO training cycle |
-| `/v1/metrics` | GET | Trajectory + success stats |
-
-### Predict Example
-
-```bash
-curl -X POST http://localhost:8001/v1/predict \
-  -H "Content-Type: application/json" \
-  -d '{"task_brief": "search knowledge base", "deterministic": true}'
 ```
-
-Response:
-```json
-{
-  "hexagram_id": 27,
-  "hexagram_name": "颐",
-  "hexagram_number": 28,
-  "action_id": 0,
-  "action_name": "route_to_service",
-  "candidates": [
-    {"index": 0, "hexagram_name": "颐", "q_value": 0.0342},
-    ...
-  ],
-  "deterministic": true
-}
+src/
+├── tokenizer.py       Qwen BPE → 8000 vocab mapping
+├── model.py           YiCeNet full model
+├── encoder.py         4-layer TinyTransformer
+├── decoder.py         Action decoder
+├── value_net.py       Q-value MLP
+├── hexagram.py        错/综/互/变 structural reasoning
+├── world_model.py     Reward predictor (18K params)
+├── train.py           Training pipeline (pre-train + RL)
+├── rl_train.py        World model driven RL fine-tuning
+├── train_value_net.py Value network supervised training
+├── data/
+│   └── dataset.py     SessionDataset + DataDrivenEnv
+├── yicenet_engine.py  Inference engine
+└── hermes_tool.py     Hermes agent tool integration
+scripts/
+├── demo.py            Inference demo
+└── *.sh               Training scripts
 ```
-
----
-
-## Two Deployment Modes
-
-| Aspect | Plan B (Local, default) | Plan A (Cross-host) |
-|---|---|---|
-| Hermes integration | In-process tool (symlink) | HTTP API call |
-| Latency | ~4ms (zero network) | ~10ms (network) |
-| Dependencies | PyTorch + Hermes tools | Docker + Docker Compose |
-| Setup | `ln -sf` tool file | `docker compose up` |
-
-For local Hermes + YiCeNet on same host → **Plan B** (faster, simpler).
-For YiCeNet on separate host → **Plan A** (HTTP via docker-compose).
-
----
-
-## Training Pipeline
-
-Two-stage training:
-1. **Unsupervised pre-train**: K-means on orchestration traces → initialize 64 hexagram prototypes
-2. **RL fine-tune (PPO)**: REINFORCE in simulated "fortune teller-customer" environment
-
-Reward signals (disambiguated):
-| Terminal Type | Reward | Meaning |
-|---|---|---|
-| `success` | +1.7 | Task completed naturally |
-| `abandoned` | -2.0 | User left after failure |
-| `timeout` | -0.5 | Max steps reached |
-
-Auto-training via Hermes cron (every 2h):
-1. Check trajectory count in SQLite
-2. If ≥500 new → run PPO training (CPU, ~7s)
-3. Evaluate: compare win_rate vs active model
-4. If +5% better → A/B switch (hot, zero downtime)
-
----
 
 ## License
 
