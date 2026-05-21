@@ -223,7 +223,7 @@ yicenet_predict(task_brief="search knowledge base")
 yicenet_predict(task_brief="rigid step A→B→C", deterministic=True)
 → {"deterministic": true, ...}  # bypass Gumbel noise
 
-yicenet_switch(checkpoint="/home/bzhao/YiCeNet/checkpoints/yicenet_v1.pt")
+yicenet_switch(checkpoint="~/YiCeNet/checkpoints/yicenet_v1.pt")
 → {"success": true, "active": "...yicenet_v1.pt"}
 ```
 
