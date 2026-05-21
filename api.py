@@ -176,5 +176,11 @@ def get_metrics():
 if __name__ == "__main__":
     port = int(os.environ.get("YICENET_PORT", 8001))
     host = os.environ.get("YICENET_HOST", "0.0.0.0")
+    import torch
+    has_cuda = torch.cuda.is_available()
+    gpu_info = f"{torch.cuda.get_device_name(0)} ({torch.cuda.memory_allocated(0)/1024**2:.0f}MB free)" if has_cuda else "none"
     print(f"YiCeNet API starting on {host}:{port}")
+    print(f"  GPU: {gpu_info}")
+    print(f"  Inference: {'GPU' if has_cuda else 'CPU'} (~{4 if has_cuda else 15}ms)")
+    print(f"  Training:  {'GPU' if has_cuda else 'CPU'} (auto-detected)")
     uvicorn.run(app, host=host, port=port, log_level="info")

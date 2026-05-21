@@ -293,7 +293,9 @@ def run_once():
     print("=" * 50)
 
     # Step 1: Train
-    result = train_once(device="cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"  Device: {device}")
+    result = train_once(device=device)
 
     # Step 2: Evaluate
     decision = evaluate_ready()
