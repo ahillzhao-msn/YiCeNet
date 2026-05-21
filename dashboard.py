@@ -176,6 +176,42 @@ def panel_performance():
     fig2.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0))
     st.plotly_chart(fig2, use_container_width=True)
 
+    # Evaluation history
+    st.subheader("版本评估历史 (v1 → v5)")
+    df_eval = load_evaluations(hours=720)  # 30 days
+    if not df_eval.empty:
+        df_agg = df_eval.groupby("version", as_index=False).agg(
+            avg_reward=("avg_reward", "mean"),
+            episodes=("episodes", "max"),
+        )
+        # Sort versions numerically (v1, v2, v5…)
+        def _ver_key(v):
+            try: return int(v.lstrip("v"))
+            except: return 0
+        df_agg["_sort"] = df_agg["version"].apply(_ver_key)
+        df_agg = df_agg.sort_values("_sort").drop(columns="_sort")
+        fig3 = go.Figure()
+        fig3.add_trace(go.Scatter(
+            x=df_agg["version"], y=df_agg["avg_reward"],
+            mode="lines+markers", name="Avg Reward",
+            marker=dict(size=10, color="#ff9800"),
+            line=dict(color="#ff9800"),
+        ))
+        fig3.add_trace(go.Bar(
+            x=df_agg["version"], y=df_agg["episodes"],
+            name="Episodes", yaxis="y2",
+            marker_color="rgba(0, 188, 212, 0.5)",
+        ))
+        fig3.update_layout(
+            xaxis_title="版本", yaxis_title="Avg Reward",
+            yaxis2=dict(title="Episodes", overlaying="y", side="right"),
+            height=300, margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(x=0, y=1),
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.caption("尚无评估记录")
+
 
 def panel_hexagram_heatmap():
     """Panel 2: 64 hexagram usage heatmap."""

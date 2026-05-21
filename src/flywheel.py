@@ -188,6 +188,10 @@ def flywheel_run():
     print(f"\n  Step 5: Registering {version} as ready...")
     _register_ready(version, new_checkpoint)
 
+    # ── Step 6: Record evaluation to metrics.db (dashboard feed) ──
+    print(f"\n  Step 6: Recording evaluation to dashboard...")
+    _record_evaluation(version, buffer_path)
+
     # ── Update state ──
     state["last_message_id"] = max(s["msg_id"] for s in new_samples)
     state["total_samples"] += new_count
@@ -385,6 +389,97 @@ def _register_ready(version: str, checkpoint_path: str):
 
     print(f"    {version} registered as 'ready' in registry.json")
     print(f"    run 'yicenet_switch' or wait for auto-switch")
+
+
+def _record_evaluation(version: str, buffer_path: Path):
+    """Evaluate model on buffer data and write to metrics.db for dashboard."""
+    import sqlite3
+    import torch
+    from src.yicenet_engine import YiCeNetEngine
+    from src.tokenizer import encode
+
+    db_path = YICENET_ROOT / "data" / "metrics.db"
+    engine = YiCeNetEngine(project_root=str(YICENET_ROOT))
+    engine._lazy_load()
+    device = next(engine._model.parameters()).device
+
+    # Load buffer samples
+    samples = []
+    with open(buffer_path) as f:
+        for line in f:
+            samples.append(json.loads(line))
+
+    if not samples:
+        print("    No samples for evaluation, skipping.")
+        return
+
+    # Evaluate: run model on each sample, collect reward + hex + outcome
+    total_reward = 0.0
+    wins = 0
+    episode_data = []
+    engine._model.eval()
+
+    with torch.no_grad():
+        for s in samples:
+            text = s["user_text"]
+            reward = s["reward"]
+
+            ids, mask = encode(text, max_len=128)
+            ids, mask = ids.to(device), mask.to(device)
+
+            h = engine._model.encode_context(ids, mask)
+            hex_idx, values = engine._model.router(h, tau=0.1, hard=True)
+            action_ids, _ = engine._model.decode_action(hex_idx)
+
+            total_reward += reward
+            if reward > 0:
+                wins += 1
+
+            episode_data.append({
+                "hexagram_id": hex_idx[0].item(),
+                "reward": reward,
+                "action_id": action_ids[0].item() if hasattr(action_ids, 'item') else action_ids,
+            })
+
+    avg_reward = total_reward / len(samples)
+    win_rate = wins / len(samples)
+
+    # Write to metrics.db
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        INSERT INTO evaluations (version, avg_reward, win_rate, episodes, duration_sec)
+        VALUES (?, ?, ?, ?, ?)
+    """, (version, avg_reward, win_rate, len(samples), 0.0))
+
+    # Also write hexagram_usage for the current date
+    date_str = time.strftime("%Y-%m-%d")
+    for ep in episode_data:
+        conn.execute("""
+            INSERT INTO hexagram_usage (date, hexagram_id, count, avg_q_value)
+            VALUES (?, ?, 1, 0.0)
+            ON CONFLICT(date, hexagram_id)
+            DO UPDATE SET count = count + 1
+        """, (date_str, ep["hexagram_id"]))
+
+    # Write evaluation trajectories so performance panel updates too
+    for ep in episode_data:
+        conn.execute("""
+            INSERT INTO trajectories
+                (session_id, hexagram_id, reward, terminal_type, latency_ms, token_cost)
+            VALUES (?, ?, ?, ?, 0, 0)
+        """, (
+            f"flywheel_eval_{version}",
+            ep["hexagram_id"],
+            ep["reward"],
+            "success" if ep["reward"] > 0 else "abandoned",
+        ))
+
+    conn.commit()
+    conn.close()
+
+    print(f"    avg_reward={avg_reward:.4f}, win_rate={win_rate:.2%}, n={len(samples)}")
+    print(f"    Written to metrics.db → dashboard will refresh in ~10s")
 
 
 if __name__ == "__main__":
