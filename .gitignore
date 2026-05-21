@@ -1,0 +1,44 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Large checkpoints (not committed, built from training)
+checkpoints/*.pt
+checkpoints/registry.json
+
+# Data
+data/*.db
+data/*.db-journal
+data/*.db-wal
+
+# Docker
+Dockerfile
+Dockerfile.dashboard
+docker-compose.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+logs/
+data/qwen_to_yicenet.json
+data/flywheel_buffer.jsonl
+data/flywheel_state.json
+yicenet_v*.tar.gz
+release/
