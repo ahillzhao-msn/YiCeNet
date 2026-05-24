@@ -1,0 +1,20 @@
+{
+  "active": {
+    "version": "v15",
+    "path": "yicenet_v15.pt",
+    "avg_reward": 0.9817,
+    "created": "2026-05-24T14:39:32",
+    "notes": "vv15 auto-detected"
+  },
+  "ready": null,
+  "fallback": null,
+  "history": [
+    {
+      "version": "v15",
+      "path": "yicenet_v15.pt",
+      "avg_reward": 0.9817,
+      "created": "2026-05-24T14:39:32",
+      "notes": "vv15 auto-detected"
+    }
+  ]
+}

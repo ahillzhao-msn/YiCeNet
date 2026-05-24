@@ -8,28 +8,29 @@ YiCeNet maps user text to one of 64 I-Ching hexagrams, learning to recognize con
 
 | Feature | Status | Location |
 |---------|--------|----------|
-| TinyEncoder (4-layer Transformer) | ✅ | `src/model.py` |
-| GumbelRouter (64-hexagram selection) | ✅ | `src/model.py` |
-| Dual-Head World Model v2 | ✅ | `src/world_model.py` |
-| Power-law forgetting curve | ✅ | `src/world_model.py` |
-| DS-supervised training pipeline | ✅ | `scripts/ds_train.py` |
-| Endogenous noise weighting | ✅ | `src/world_model.py` → `flywheel.py` |
+| TinyEncoder (4-layer Transformer) | ✅ | `src/yicenet/model.py` |
+| GumbelRouter (64-hexagram selection) | ✅ | `src/yicenet/model.py` |
+| Dual-Head World Model v2 | ✅ | `src/yicenet/world_model.py` |
+| Power-law forgetting curve | ✅ | `src/yicenet/world_model.py` |
+| API-supervised RL training | ✅ | `scripts/rl_train.py` |
+| Endogenous noise weighting | ✅ | `src/yicenet/world_model.py` → `src/yicenet/flywheel.py` |
 | Hot-swap checkpoint registry | ✅ | `scripts/checkpoint_manager.py` |
-| Autonomous 12h flywheel | ✅ | `src/flywheel.py` |
+| Autonomous 12h flywheel | ✅ | `src/yicenet/flywheel.py` |
 | Sampling stratification (planned) | ⏳ | Not yet implemented |
 
 ## Quick Start
 
 ```bash
-# Train with DS supervision + endogenous weighting
-python scripts/ds_train.py \
+# Train with API supervision (configurable endpoint + model)
+python scripts/rl_train.py \
   --version v16 \
   --buffer data/flywheel_buffer.jsonl \
-  --ds-results data/ds_eval_all.jsonl \
+  --eval-results data/ds_eval_all.jsonl \
   --endogenous
 
-# Evaluate new samples via DeepSeek
-python scripts/ds_evaluate.py \
+# Evaluate new samples via any OpenAI-compatible API
+# In env: EVAL_API_URL=... EVAL_MODEL=... EVAL_API_KEY=...
+python scripts/eval_api.py \
   --input samples.jsonl \
   --output evaluations.jsonl \
   --batch-size 20
@@ -58,4 +59,38 @@ python scripts/checkpoint_manager.py register v16 path/to/model.pt 0.99
 
 ## Architecture
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full documentation of all components.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for full documentation of all components.
+
+## Installation
+
+See [INSTALL.md](INSTALL.md) for detailed setup guide.
+
+```bash
+# Editable install (recommended for development)
+pip install -e /path/to/YiCeNet
+
+# Then from any Python session:
+#   from yicenet.model import YiCeNet
+#   from yicenet.config import YiCeNetConfig
+```
+
+## Configuration (Environment Variables)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EVAL_API_URL` | `https://api.deepseek.com/v1/chat/completions` | API endpoint for evaluation |
+| `EVAL_MODEL` | `deepseek-chat` | Model name for evaluation |
+| `EVAL_API_KEY` | (from env or .env) | API key for evaluation |
+| `DEEPSEEK_API_KEY` | (fallback) | Legacy compat: replaces EVAL_API_KEY |
+| `YICENET_ROOT` | auto-detected | Override project root |
+
+## Project Layout
+
+```
+YiCeNet/
+├── src/yicenet/         # Core library (editable package)
+├── scripts/             # Training/evaluation CLI scripts
+├── data/                # Training data & flywheel buffer
+├── checkpoints/         # Model weights & registry (gitignored)
+└── pyproject.toml       # Build & dependency config
+```

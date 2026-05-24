@@ -1,53 +1,43 @@
-# Git
-.git/
-.gitignore
-.github/
+# Environment
+.env
 
-# Python
+# Byte-compiled
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+
+# Virtual environment
 .venv/
 venv/
-
-# Large checkpoints (not committed, built from training)
-checkpoints/*.pt
-checkpoints/registry.json
-
-# Data
-data/*.db
-data/*.db-journal
-data/*.db-wal
-
-# Docker
-Dockerfile
-Dockerfile.dashboard
-docker-compose.yml
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Training artifacts
+# Logs
 logs/
-data/qwen_to_yicenet.json
+*.log
+
+# Model weights (track specific trained versions, ignore ephemeral)
+checkpoints/*_v4.pt
+checkpoints/*_v6.pt
+checkpoints/*_latest.pt
+
+# Data (regenerated)
+data/ds_eval*
 data/flywheel_buffer.jsonl
-data/flywheel_state.json
-yicenet_v*.tar.gz
-release/
+data/metrics.db
+data/qwen_to_yicenet.json
+src/yicenet/data/qwen_to_yicenet.json
 
-# DS evaluation artifacts (regeneratable)
-data/ds_eval_*.jsonl
+# Build artifacts
+*.egg-info/
+dist/
+build/
 
-# Training metrics (regeneratable)
-checkpoints/*_metrics.json
-
-# Flywheel state  
-data/flywheel_*.jsonl
+# Keep the structure
+data/.gitkeep

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yicenet"
+version = "15.0.0"
+description = "I-Ching inspired tiny neural network for conversational navigation"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24",
+    "transformers>=4.35",
+    "sentencepiece>=0.1",
+    "tqdm>=4.60",
+    "huggingface-hub>=0.20",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["yicenet*"]
+exclude = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.txt"]

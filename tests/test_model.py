@@ -4,13 +4,13 @@ Tests for YiCeNet components.
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import torch
-from src.config import YiCeNetConfig
-from src.model import YiCeNet
-from src.encoder import TinyEncoder
-from src.hexagram import (
+from yicenet.config import YiCeNetConfig
+from yicenet.model import YiCeNet
+from yicenet.encoder import TinyEncoder
+from yicenet.hexagram import (
     hexagram_to_lines, lines_to_hexagram,
     cuo_hexagram, zong_hexagram, hu_hexagram,
     zhi_hexagram, generate_candidates,

@@ -1,16 +1,39 @@
 #!/usr/bin/env python3
 """
 Checkpoint management script for YiCeNet.
-- Maintains registry.json with active + top-3 scored models
+- Maintains registry.json with active + ready + fallback + history
 - Prunes old checkpoints to control disk usage
 - Hot-swap support via registry update
+
+Registry stores paths RELATIVE to checkpoints/ directory.
+All path resolution happens at read time.
 """
-import json, os, time, shutil
+import json, os, time
 from pathlib import Path
 
-CHECKPOINT_DIR = Path.home() / "YiCeNet" / "checkpoints"
+# Resolve project root relative to this script's location
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+CHECKPOINT_DIR = PROJECT_DIR / "checkpoints"
 REGISTRY_PATH = CHECKPOINT_DIR / "registry.json"
-MAX_KEEP = 3  # keep top 3 scoring checkpoints + active + base
+MAX_KEEP = 3
+
+
+def _resolve(p):
+    """Resolve a registry path (relative or absolute) to absolute."""
+    p = Path(p)
+    if p.is_absolute():
+        return p
+    return (CHECKPOINT_DIR / p).resolve()
+
+
+def _store(p):
+    """Store a path RELATIVE to CHECKPOINT_DIR in registry."""
+    p = Path(p).resolve()
+    try:
+        return os.path.relpath(str(p), start=str(CHECKPOINT_DIR))
+    except ValueError:
+        # Different drive on Windows — fall back to absolute
+        return str(p)
 
 
 def score_checkpoint(path: Path) -> float:
@@ -20,15 +43,12 @@ def score_checkpoint(path: Path) -> float:
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
         reward = ckpt.get("avg_reward", 0.0)
         version = ckpt.get("version", "")
-        # Bonus for more recent versions with high reward
-        # Composite: reward (0-1) + version recency bonus
         ver_num = 0
-        if version and "v15" in version:
-            ver_num = 15
-        elif version and "v14" in version:
-            ver_num = 14
-        # Score = reward * 100 + version_bonus
-        # Higher reward + newer version = higher score
+        if version and version.startswith("v"):
+            try:
+                ver_num = int(version[1:])
+            except ValueError:
+                pass
         return float(reward) * 100.0 + float(ver_num)
     except Exception:
         return 0.0
@@ -42,16 +62,13 @@ def clean_registry():
     with open(REGISTRY_PATH) as f:
         reg = json.load(f)
     
-    # Validate all paths exist
     def path_exists(p):
         if not p:
             return False
-        return Path(p).expanduser().exists()
+        return _resolve(p).exists()
     
-    # Clean history
     reg["history"] = [h for h in reg.get("history", []) if path_exists(h.get("path"))]
     
-    # Validate active/ready/fallback
     for key in ["active", "ready", "fallback"]:
         entry = reg.get(key)
         if entry and isinstance(entry, dict):
@@ -76,15 +93,14 @@ def find_best_checkpoint() -> dict:
     best = None
     
     for pt in CHECKPOINT_DIR.glob("yicenet_v*.pt"):
-        if "latest" in pt.name or "test" in pt.name or pt.name == "yicenet_v4.pt":
+        if "test" in pt.name:
             continue
-        
         score = score_checkpoint(pt)
         if score > best_score:
             best_score = score
             best = {
                 "version": pt.stem.replace("yicenet_", ""),
-                "path": str(pt),
+                "path": _store(pt),
                 "score": round(score, 2),
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "notes": "Auto-detected best checkpoint"
@@ -97,10 +113,9 @@ def create_fresh_registry():
     """Create a fresh registry from existing checkpoints."""
     print("Creating fresh registry.json...")
     
-    # Find all valid checkpoints
     checkpoints = []
     for pt in sorted(CHECKPOINT_DIR.glob("yicenet_v*.pt")):
-        if "latest" in pt.name or "test" in pt.name:
+        if "test" in pt.name:
             continue
         try:
             import torch
@@ -109,7 +124,7 @@ def create_fresh_registry():
             reward = ckpt.get("avg_reward", 0.0)
             checkpoints.append({
                 "version": ver,
-                "path": str(pt),
+                "path": _store(pt),
                 "avg_reward": round(reward, 4),
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "notes": f"v{ver} auto-detected"
@@ -117,9 +132,7 @@ def create_fresh_registry():
         except Exception as e:
             print(f"  Skipping {pt.name}: {e}")
     
-    # Sort by version recency (descending)
     checkpoints.sort(key=lambda x: x.get("avg_reward", 0), reverse=True)
-    
     active = checkpoints[0] if checkpoints else None
     
     reg = {
@@ -145,19 +158,12 @@ def prune_checkpoints(dry_run=False):
     with open(REGISTRY_PATH) as f:
         reg = json.load(f)
     
-    # Protected checkpoints (never delete)
-    protected = {
-        str(CHECKPOINT_DIR / "yicenet_v4.pt"),        # base model
-        str(CHECKPOINT_DIR / "yicenet_v14_latest.pt"), # latest active
-    }
-    if reg.get("active"):
-        protected.add(reg["active"]["path"])
-    if reg.get("ready"):
-        protected.add(reg["ready"]["path"])
-    if reg.get("fallback"):
-        protected.add(reg["fallback"]["path"])
+    protected = set()
+    for key in ["active", "ready", "fallback"]:
+        entry = reg.get(key)
+        if entry and isinstance(entry, dict) and entry.get("path"):
+            protected.add(str(_resolve(entry["path"])))
     
-    # Score all valid checkpoints
     scored = []
     for pt in CHECKPOINT_DIR.glob("yicenet_v*.pt"):
         if str(pt) in protected:
@@ -167,14 +173,12 @@ def prune_checkpoints(dry_run=False):
         score = score_checkpoint(pt)
         scored.append((score, pt))
     
-    scored.sort(key=lambda x: -x[0])  # descending
+    scored.sort(key=lambda x: -x[0])
     
-    # Keep top MAX_KEEP
     keep = set()
     for _, pt in scored[:MAX_KEEP]:
         keep.add(str(pt))
     
-    # Remove the rest
     removed = []
     for score, pt in scored:
         if str(pt) not in keep:
@@ -198,7 +202,7 @@ def register_new_checkpoint(version: str, path: str, metrics: dict):
     
     new_entry = {
         "version": version,
-        "path": path,
+        "path": _store(path),
         "avg_reward": round(metrics.get("avg_reward", 0.0), 4),
         "best_reward": round(metrics.get("best_avg_reward", metrics.get("avg_reward", 0.0)), 4),
         "samples": metrics.get("samples", 0),
@@ -207,14 +211,12 @@ def register_new_checkpoint(version: str, path: str, metrics: dict):
         "notes": metrics.get("notes", f"v{version} trained"),
     }
     
-    # Previous active moves to ready, previous ready to fallback
     if reg.get("active"):
         reg["fallback"] = reg.get("ready")
         reg["ready"] = reg["active"]
     
     reg["active"] = new_entry
     
-    # Add to history
     if "history" not in reg:
         reg["history"] = []
     reg["history"].append(new_entry)
@@ -234,7 +236,6 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "clean":
         clean_registry()
     elif len(sys.argv) > 1 and sys.argv[1] == "register":
-        # Usage: register <version> <path> [reward]
         ver = sys.argv[2]
         pth = sys.argv[3]
         reward = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
