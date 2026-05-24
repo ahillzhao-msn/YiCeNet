@@ -29,6 +29,7 @@ import torch.nn.functional as F
 
 # ── Real Qwen BPE tokenizer ──
 from .tokenizer import encode as yicenet_encode, build_vocab
+from .config import yicenet_data_dir
 
 # Check if vocab exists, build if not
 _VOCAB_CHECKED = False
@@ -36,9 +37,8 @@ def _ensure_vocab():
     global _VOCAB_CHECKED
     if _VOCAB_CHECKED:
         return
-    map_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                            "data", "qwen_to_yicenet.json")
-    if not os.path.exists(map_path):
+    map_path = yicenet_data_dir() / "qwen_to_yicenet.json"
+    if not map_path.exists():
         print("[YiCeNet] Building vocabulary from session DB...")
         build_vocab()
     _VOCAB_CHECKED = True
@@ -96,9 +96,10 @@ class YiCeNetEngine:
         self._checkpoint = checkpoint
         self._config = None
 
-        # Resolve paths
+        # Resolve paths: YICENET_HOME env var > explicit > auto-detect
         if not project_root:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            from .config import yicenet_home
+            project_root = str(yicenet_home())
         self._project_root = project_root
         if not checkpoint:
             # Don't set default here — let _lazy_load check registry.json first
@@ -144,7 +145,6 @@ class YiCeNetEngine:
             )
 
         # Import here to avoid top-level dependency on heavy libs
-        sys.path.insert(0, self._project_root)
         from yicenet.model import YiCeNet
         from yicenet.config import YiCeNetConfig
 
@@ -357,8 +357,9 @@ class YiCeNetEngine:
         Call periodically from Hermes cron.
         Returns switch result dict, or None if no switch needed.
         """
-        reg_path = os.path.join(self._project_root, "checkpoints", "registry.json")
-        if not os.path.exists(reg_path):
+        from .config import yicenet_checkpoint_dir
+        reg_path = yicenet_checkpoint_dir() / "registry.json"
+        if not reg_path.exists():
             return None
 
         with open(reg_path) as f:
@@ -411,7 +412,8 @@ _engine: Optional[YiCeNetEngine] = None
 def get_engine(checkpoint: str = "") -> YiCeNetEngine:
     global _engine
     if _engine is None:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        from .config import yicenet_home
+        project_root = str(yicenet_home())
         _engine = YiCeNetEngine(checkpoint=checkpoint, project_root=project_root)
     return _engine
 

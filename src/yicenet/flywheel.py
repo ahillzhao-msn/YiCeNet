@@ -17,14 +17,14 @@ import sys
 import time
 from pathlib import Path
 
-# ── Paths ──
-YICENET_ROOT = Path(__file__).resolve().parent.parent.parent  # src/yicenet/flywheel.py → ∼/YiCeNet
+# ── Paths (dual-mode: YICENET_HOME env var > auto-detect) ──
+from yicenet.config import yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
+
+YICENET_ROOT = yicenet_home()
+CHECKPOINT_DIR = yicenet_checkpoint_dir()
+REGISTRY_PATH = CHECKPOINT_DIR / "registry.json"
 STATE_FILE = Path.home() / ".hermes" / "data" / "yicenet_flywheel.json"
 DB_PATH = str(Path.home() / ".hermes" / "state.db")
-CHECKPOINT_DIR = YICENET_ROOT / "checkpoints"
-REGISTRY_PATH = CHECKPOINT_DIR / "registry.json"
-
-sys.path.insert(0, str(YICENET_ROOT))
 
 # ── Power law parameters (match config.py defaults) ──
 WM_SLOW_TAU_DAYS = 30.0
@@ -163,7 +163,7 @@ def flywheel_run():
 
     # ── Step 2: Append to training buffer ──
     print("\n  Step 2: Appending to training buffer...")
-    buffer_path = YICENET_ROOT / "data" / "flywheel_buffer.jsonl"
+    buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
     os.makedirs(os.path.dirname(buffer_path), exist_ok=True)
 
     new_count = 0

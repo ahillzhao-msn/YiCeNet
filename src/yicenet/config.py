@@ -1,9 +1,54 @@
 """
 YiCeNet configuration — all hyperparameters in one place.
+
+Path Resolution (dual-mode):
+  Dev (venv):  uses __file__-based auto-detection (source tree).
+  Deploy (pip): explicitly set YICENET_HOME env var, e.g.
+                YICENET_HOME=~/.hermes/data/yicenet
 """
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
+
+_YICENET_HOME_CACHE = None
+
+
+def yicenet_home() -> Path:
+    """Unified root directory for YiCeNet runtime data.
+
+    Priority:
+      1. YICENET_HOME env var (deploy mode)
+      2. __file__-based auto-detection from source tree (dev mode)
+    """
+    global _YICENET_HOME_CACHE
+    if _YICENET_HOME_CACHE is not None:
+        return _YICENET_HOME_CACHE
+
+    env = os.environ.get("YICENET_HOME")
+    if env:
+        _YICENET_HOME_CACHE = Path(env).expanduser().resolve()
+    else:
+        # Auto-detect from this file: config.py → yicenet/ → src/ → project root
+        _YICENET_HOME_CACHE = Path(__file__).resolve().parent.parent.parent
+    return _YICENET_HOME_CACHE
+
+
+def yicenet_data_dir() -> Path:
+    """Data directory under yicenet_home."""
+    return yicenet_home() / "data"
+
+
+def yicenet_checkpoint_dir() -> Path:
+    """Checkpoint directory under yicenet_home."""
+    return yicenet_home() / "checkpoints"
+
+
+def yicenet_log_dir() -> Path:
+    """Log directory under yicenet_home."""
+    return yicenet_home() / "logs"
 
 
 @dataclass

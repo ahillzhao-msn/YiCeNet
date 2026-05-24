@@ -17,9 +17,14 @@ from typing import Optional
 
 import torch
 
+from .config import yicenet_data_dir
+
 _TOK = None  # lazy-loaded Qwen tokenizer
 _VOCAB_MAP = None  # lazy-loaded {qwen_id: yicenet_id}
-_YICENET_ROOT = Path(__file__).parent.parent
+
+def _map_path() -> Path:
+    """Location of the Qwen→YiCeNet vocab mapping file."""
+    return yicenet_data_dir() / "qwen_to_yicenet.json"
 
 
 def _get_qwen_tokenizer():
@@ -39,7 +44,7 @@ def _load_vocab_map() -> dict[int, int]:
     if _VOCAB_MAP is not None:
         return _VOCAB_MAP
 
-    map_path = _YICENET_ROOT / "data" / "qwen_to_yicenet.json"
+    map_path = _map_path()
     if map_path.exists():
         with open(map_path) as f:
             raw = json.load(f)
@@ -99,7 +104,7 @@ def build_vocab(
 
     # Save
     if output_path is None:
-        output_path = str(_YICENET_ROOT / "data" / "qwen_to_yicenet.json")
+        output_path = str(_map_path())
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
         json.dump(mapping, f)

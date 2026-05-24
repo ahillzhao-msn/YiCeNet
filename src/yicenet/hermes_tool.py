@@ -21,9 +21,19 @@ except ModuleNotFoundError:
     # direct import when called with the right context.
     registry = None
 
-# Resolve YiCeNet project root from hermes-agent/tools/ → ~/YiCeNet
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_YICENET_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", "..", "..", "YiCeNet"))
+# Resolve YiCeNet runtime data directory (checkpoints, vocab, etc.)
+# Priority: YICENET_HOME env var > auto-detect from installed package
+try:
+    from yicenet.config import yicenet_home, yicenet_checkpoint_dir
+    _YICENET_ROOT = str(yicenet_home())
+    _CHECKPOINT_DIR = str(yicenet_checkpoint_dir())
+except ImportError:
+    # Fallback: auto-detect from hermes-agent/tools/ → ~/YiCeNet
+    _YICENET_ROOT = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "..", "YiCeNet"
+    ))
+    _CHECKPOINT_DIR = os.path.join(_YICENET_ROOT, "checkpoints")
 
 # Lazy engine import (avoids torch load at Hermes startup)
 _engine = None
@@ -34,7 +44,7 @@ def _get_engine():
     if _engine is None:
         from yicenet.yicenet_engine import YiCeNetEngine
         # Read active checkpoint from registry
-        reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+        reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
         ckpt = ""
         if os.path.exists(reg_path):
             try:
@@ -44,11 +54,11 @@ def _get_engine():
                 _active_version = reg.get("active", {}).get("version", "")
                 # Resolve relative path (relative to checkpoints/)
                 if ckpt and not os.path.isabs(ckpt):
-                    ckpt = os.path.join(_YICENET_ROOT, "checkpoints", ckpt)
+                    ckpt = os.path.join(_CHECKPOINT_DIR, ckpt)
             except Exception:
                 pass
         if not ckpt or not os.path.exists(ckpt):
-            ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_v15.pt")
+            ckpt = os.path.join(_CHECKPOINT_DIR, "yicenet_v15.pt")
         _engine = YiCeNetEngine(checkpoint=ckpt, project_root=_YICENET_ROOT)
     return _engine
 
@@ -58,7 +68,7 @@ def _check_registry_switch():
     If so, hot-switch the engine to the new checkpoint."""
     global _active_version, _engine
 
-    reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+    reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
     if not os.path.exists(reg_path):
         return
 
@@ -71,7 +81,7 @@ def _check_registry_switch():
 
         # Resolve relative path
         if new_path and not os.path.isabs(new_path):
-            new_path = os.path.join(_YICENET_ROOT, "checkpoints", new_path)
+            new_path = os.path.join(_CHECKPOINT_DIR, new_path)
 
         # No change, skip
         if new_version == _active_version or not new_path:
@@ -151,17 +161,17 @@ def check_yicenet_requirements() -> bool:
     try:
         import torch
         # Check registry first, then fallback
-        reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+        reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
         if os.path.exists(reg_path):
             with open(reg_path) as f:
                 reg = json.load(f)
             active_path = reg.get("active", {}).get("path", "")
             if active_path:
                 if not os.path.isabs(active_path):
-                    active_path = os.path.join(_YICENET_ROOT, "checkpoints", active_path)
+                    active_path = os.path.join(_CHECKPOINT_DIR, active_path)
                 if os.path.exists(active_path):
                     return True
-        ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_v15.pt")
+        ckpt = os.path.join(_CHECKPOINT_DIR, "yicenet_v15.pt")
         return os.path.exists(ckpt)
     except ImportError:
         return False
