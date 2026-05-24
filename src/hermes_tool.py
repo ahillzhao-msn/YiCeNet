@@ -25,9 +25,10 @@ from tools.registry import registry
 
 # Lazy engine import (avoids torch load at Hermes startup)
 _engine = None
+_active_version = None  # tracks registry.json['active']['version'] for hot-reload
 
 def _get_engine():
-    global _engine
+    global _engine, _active_version
     if _engine is None:
         from src.yicenet_engine import YiCeNetEngine
         # Read active checkpoint from registry
@@ -38,12 +39,50 @@ def _get_engine():
                 with open(reg_path) as f:
                     reg = json.load(f)
                 ckpt = reg.get("active", {}).get("path", "")
+                _active_version = reg.get("active", {}).get("version", "")
             except Exception:
                 pass
         if not ckpt or not os.path.exists(ckpt):
-            ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_rl_best.pt")
+            ckpt = os.path.join(_YICENET_ROOT, "checkpoints", "yicenet_v14_latest.pt")
         _engine = YiCeNetEngine(checkpoint=ckpt, project_root=_YICENET_ROOT)
     return _engine
+
+
+def _check_registry_switch():
+    """Check if registry.json active version changed since engine load.
+    If so, hot-switch the engine to the new checkpoint."""
+    global _active_version, _engine
+
+    reg_path = os.path.join(_YICENET_ROOT, "checkpoints", "registry.json")
+    if not os.path.exists(reg_path):
+        return
+
+    try:
+        with open(reg_path) as f:
+            reg = json.load(f)
+        active = reg.get("active", {})
+        new_version = active.get("version", "")
+        new_path = active.get("path", "")
+
+        # No change, skip
+        if new_version == _active_version or not new_path:
+            return
+
+        # Version changed — hot-switch
+        if not os.path.exists(new_path):
+            return
+
+        if _engine is not None:
+            _engine.switch_model(new_path)
+        else:
+            # Lazy load will pick it up
+            _engine = None
+            _get_engine()
+
+        _active_version = new_version
+        print(f"[YiCeNet] Hot-switched to {new_version}: {new_path}")
+    except Exception:
+        pass
 
 
 def yicenet_predict(task_brief: str, temperature: float = 0.1,
@@ -58,6 +97,8 @@ def yicenet_predict(task_brief: str, temperature: float = 0.1,
     rigid/fixed workflows. The model outputs pure argmax.
     """
     try:
+        # Check if registry.json active changed since last call
+        _check_registry_switch()
         engine = _get_engine()
         result = engine.predict(task_brief, temperature, deterministic)
         # Log to metrics DB

@@ -33,6 +33,36 @@ class YiCeNetConfig:
     # ── Value Network ──
     value_hidden: int = 128
 
+    # ── Probe System ──
+    probe_dim: int = 9  # 六探針合計維度
+    """六探針合計維度：h密度(2) + logits形狀(1) + 卦象家族(3) + Q值差距(1) + 跳躍度(1) + 動作置信(1)"""
+
+    # ── World Model v2 (Dual-Head + Power Law) ──
+    wm_shared_dim: int = 128
+    """世界模型共享層維度"""
+    wm_hexagram_head_dim: int = 64
+    """頭A：結果卦象分布（等於卦數）"""
+    num_external_metrics: int = 3
+    """頭B：外部向量維度（token消耗 + 續航長度 + 滿意度）"""
+    wm_beta: float = 0.3
+    """外部向量 loss 權重係數 β"""
+    wm_slow_tau_days: float = 30.0
+    """頭A 冪律衰減時間常數（天）"""
+    wm_fast_tau_days: float = 3.0
+    """頭B 冪律衰減時間常數（天）"""
+    wm_alpha: float = 1.5
+    """冪律衰減指數 α"""
+
+    # ── External Metrics ──
+    ext_continuation_weight: float = 0.4
+    """續航針投影權重"""
+    ext_correction_weight: float = 0.4
+    """校正針投影權重"""
+    ext_completion_weight: float = 0.4
+    """完成針投影權重"""
+    ext_projection_temperature: float = 0.5
+    """投影 softmax 溫度（低=尖銳，高=平滑）"""
+
     # ── Training ──
     batch_size: int = 64
     learning_rate: float = 3e-4

@@ -217,6 +217,24 @@ class YiCeNetEngine:
                 # Decode action
                 action_ids, action_logits = self._model.decode_action(best_hex_id)
 
+                # Extract probes (deterministic path — tensor form)
+                from src.probes import extract_probes_tensor
+                prev_t = (self._model._prev_hexagram_idx_tensor.to(device)
+                          if hasattr(self._model, "_prev_hexagram_idx_tensor")
+                          and self._model._prev_hexagram_idx_tensor is not None
+                          else None)
+                probe_tensor = extract_probes_tensor(
+                    h=h,
+                    router_logits=router_logits,
+                    router_probs=hex_probs,
+                    candidate_values=cand_values,
+                    hexagram_idx=hex_idx,
+                    prev_hexagram_idx=prev_t,
+                    action_logits=action_logits,
+                )
+                self._model._prev_hexagram_idx_tensor = hex_idx.clone()
+                self._model._prev_hexagram_idx = hex_idx[0].item()
+
             else:
                 # ── Stochastic path: Gumbel-Softmax sampling ──
                 output = self._model(
@@ -230,6 +248,8 @@ class YiCeNetEngine:
                 cand_values = output["candidate_values"]
                 action_ids = output["action_ids"]
                 best_hex_id = cand_idxs.gather(1, best_cand.unsqueeze(-1)).squeeze(-1)
+                probes = output.get("probes")
+                # probes already extracted and prev_hexagram already updated in model.forward()
 
         # ── Build result ──
         hex_id = hex_idx.item()
@@ -237,6 +257,13 @@ class YiCeNetEngine:
         cand_values_list = cand_values.squeeze().tolist()
         best_cand_val = best_cand.item() if hasattr(best_cand, 'item') else best_cand
         action_id = action_ids.item()
+
+        # ── Probe vector → list ──
+        if deterministic:
+            probe_list = probe_tensor.tolist()  # from deterministic path
+        else:
+            probe_tensor_from_output = output.get("probes")
+            probe_list = probe_tensor_from_output.tolist() if probe_tensor_from_output is not None else None
 
         candidates = []
         for i in range(8):
@@ -273,6 +300,7 @@ class YiCeNetEngine:
             "q_values": [round(v, 4) for v in cand_values_list],
             "temperature": temperature if not deterministic else 0.0,
             "deterministic": deterministic,
+            "probes": probe_list,
         }
 
     def predict_structured(self, text: str, temperature: float = 0.1,

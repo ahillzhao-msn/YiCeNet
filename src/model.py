@@ -31,6 +31,7 @@ from .hexagram import (
 )
 from .value_net import ValueNetwork
 from .decoder import ActionDecoder
+from .probes import extract_probes_tensor
 
 
 class GumbelRouter(nn.Module):
@@ -155,6 +156,12 @@ class YiCeNet(nn.Module):
             list(config.hexagram_patterns), dtype=torch.long
         )
         self.register_buffer("hexagram_patterns", patterns)
+
+        # ── 探針狀態追蹤 ──
+        self._prev_hexagram_idx: int | None = None
+        """上輪的卦象 ID，用於計算跳躍度（探針⑤）。由引擎在每次 predict 後更新。"""
+        self._prev_hexagram_idx_tensor: torch.Tensor | None = None
+        """上輪卦象的 tensor 形式，供張量化探針提取直接使用。"""
 
     @property
     def device(self):
@@ -331,6 +338,26 @@ class YiCeNet(nn.Module):
         # Step 5: Decode to action
         action_ids, action_logits = self.decode_action(best_hexagram_id)
 
+        # ── 六探針提取（張量化）──
+        router_logits = self.router.projection(h)  # (B, 64)
+        prev_t = (self._prev_hexagram_idx_tensor.to(h.device)
+                  if hasattr(self, "_prev_hexagram_idx_tensor")
+                  and self._prev_hexagram_idx_tensor is not None
+                  else None)
+        probe_tensor = extract_probes_tensor(
+            h=h,
+            router_logits=router_logits,
+            router_probs=probs,
+            candidate_values=candidate_values,
+            hexagram_idx=hexagram_idx,
+            prev_hexagram_idx=prev_t,
+            action_logits=action_logits,
+        )  # (9,) tensor
+
+        # 更新上輪卦象（tensor 形式，供下次張量化調用）
+        self._prev_hexagram_idx_tensor = hexagram_idx.clone()
+        self._prev_hexagram_idx = hexagram_idx[0].item()
+
         return {
             "h": h,
             "hexagram_idx": hexagram_idx,
@@ -340,6 +367,8 @@ class YiCeNet(nn.Module):
             "candidate_values": candidate_values,
             "action_ids": action_ids,
             "action_logits": action_logits,
+            "probes": probe_tensor,        # (9,) tensor
+            "router_logits": router_logits,
         }
 
     def get_param_count(self) -> dict:

@@ -42,3 +42,12 @@ data/flywheel_buffer.jsonl
 data/flywheel_state.json
 yicenet_v*.tar.gz
 release/
+
+# DS evaluation artifacts (regeneratable)
+data/ds_eval_*.jsonl
+
+# Training metrics (regeneratable)
+checkpoints/*_metrics.json
+
+# Flywheel state  
+data/flywheel_*.jsonl
