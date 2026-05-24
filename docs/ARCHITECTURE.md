@@ -4,145 +4,251 @@
 
 ## Overview
 
-YiCeNet is a tiny neural network (~5.6M params, ~22MB) that learns I-Ching hexagram prediction as a proxy for conversational navigation. It predicts which of the 64 hexagrams best represents a user's intent, then selects an orchestration action.
+YiCeNet is a tiny neural network (~5.6M params, 22MB) that learns I-Ching hexagram prediction as a proxy for conversational navigation. It maps user text to one of 64 hexagrams, then selects an orchestration action.
 
 ```
-User Input → TinyEncoder → 256-dim state → GumbelRouter → Hexagram (1/64)
-                                                              ↓
-                                              Value Network + Action Decoder
-                                                              ↓
-                                                    Navigation Decision
+Input ─→ TinyEncoder ─→ h (256-dim) ─→ GumbelRouter ─→ hexagram (1/64)
+                                             │
+                                    ┌───────┴───────┐
+                                    ▼               ▼
+                              Value Network    Action Decoder
+                                    │               │
+                                    └───────┬───────┘
+                                            ▼
+                                     Navigation Decision
 ```
 
-## Three-Layer Noise Design
+---
 
-The core innovation is a **self-modulating denoising** system — the model learns what to ignore, not by external classification, but by its own prediction confidence.
+## Core Components
 
-### Layer 1: DS Confidence Temperature Modulation
+### TinyEncoder
 
-```
-project_to_hexagram_space(reward_signals, satisfaction)
-  → effective_temp = max(0.1, 1.0 - |satisfaction|)
-  → target = softmax(logits / effective_temp)
-```
-
-- High |satisfaction| → low temp → sharp target → strong learning signal
-- Low |satisfaction| → high temp → near-uniform → near-zero KL loss
-- **No external noise classifier needed** — DS evaluator's own uncertainty is the noise detector
-
-### Layer 2: Endogenous Prediction Surprise
+4-layer Transformer encoder (8M params).
 
 ```
-WM.predict(probes, hex_id)   → predicted hexagram distribution
-target = project(signals)     → actual outcome distribution
-surprise = KL(pred || target) → how surprised is the WM?
-
-weight = 1 - sigmoid((surprise - 0.03) × 50)
+Input:  BPE-tokenized text → 8000 vocab → 128 max tokens
+  → Embedding (256-dim)
+  → 4× Transformer blocks (4 heads, 1024 FFN)
+  → Mean pool → LayerNorm → StateProjection(256→256)
+Output: h (256-dim) — conversational state vector
 ```
-
-- Low surprise (WM predicted correctly) → high weight → strong learning
-- High surprise (WM prediction missed) → low weight → noise suppression
-- **Fully endogenous** — no external evaluator needed after initial training
-
-### Layer 3: Sampling Stratification (Future)
-
-Classify buffer samples by quality before training, stratified sampling to ensure diverse coverage.
-
-## Architecture Components
-
-### TinyEncoder (4-layer Transformer)
-- Input: BPE-tokenized text (max 128 tokens, 8000 vocab)
-- 4 transformer layers, 256-dim hidden, 4 heads
-- Output: 256-dim state vector `h`
 
 ### GumbelRouter
-- Projects `h` to 64-dim logits → Gumbel-Softmax → hexagram sample
-- Temperature annealing: 1.0 → 0.1 over training
 
-### Dual-Head World Model (WorldModelV2)
-~20K parameters, the smallest but most important component.
+Binary decision network that selects a hexagram from the state vector `h`.
+
+```
+h (256-dim) → Linear(256→64) → Gumbel-Softmax → hexagram index (1/64)
+```
+
+- Temperature τ anneals from 1.0 → 0.1 during training
+- Low τ → near-argmax (exploitation), high τ → near-uniform (exploration)
+- Output: hexagram_idx + categorical probabilities over 64 hexagrams
+
+### Hexagram Embedding + Trigram Cross-Attention
+
+Each of the 64 hexagrams has a 256-dim embedding vector. The 8 trigrams (八卦) are represented as learnable prototypes with cross-attention to the hexagram embedding.
+
+- `hexagram_embed: nn.Embedding(64, 256)` — learned hexagram prototypes
+- `trigram_prototypes: nn.Parameter(8, 256)` — 8 basic patterns
+- Cross-attention computes compatibility between selected hexagram and each trigram
+
+### Value Network
+
+Small MLP that scores each candidate hexagram.
+
+```
+256-dim → 128 → 1 (value scalar)
+```
+
+Learned via regression to match the World Model's 64-dim prediction reward.
+
+### Action Decoder
+
+Projects hexagram + value to action tokens.
+
+```
+hexagram_embed(256) + value(1) → 128 → num_actions(50)
+```
+
+Outputs logits over 50 orchestration primitives (search, read, write, delegate, etc.).
+
+---
+
+## Dual-Head World Model (WorldModelV2)
+
+~20K params. The smallest but most critical component — serves as the training critic.
 
 ```
 Input: probes(ℝ⁹) + hexagram_onehot(ℝ⁶⁴) → ℝ⁷³
-  → Shared(73→128) → GELU
-      ├── Head A (128→64):  hexagram distribution prediction (long-term, τ=30d)
-      └── Head B (128→N):   external metrics (short-term, τ=3d)
+  → LayerNorm
+  → Linear(73→128) → GELU  (shared layer)
+      ├── Head A: Linear(128→64) → Softmax → hexagram distribution ℝ⁶⁴
+      └── Head B: Linear(128→3) → Sigmoid → external metrics ℝ³
+
+Head A targets: [hexagram_distribution]  — long-term (τ=30 days)
+Head B targets: [token_cost, response_length, satisfaction] — short-term (τ=3 days)
 ```
 
-- **Head A**: Predicts which hexagram distribution will result from this (probe, hex) pair
-- **Head B**: Predicts [token_cost, response_length, satisfaction]
-- **Shared layer**: Short-term fluctuations feed back into long-term patterns
-- **Power-law forgetting**: Older samples decay gracefully, never reach zero
+### Key Behaviors
 
-### Endogenous Weight (Layer 2 implementation)
+- **Power-law forgetting**: Older samples decay as `w(t) = (1 + t/τ)^(-α)` — never reach zero, just become whispers
+- **Dual-head sharing**: Short-term fluctuations in Head B feed into Head A's shared layer
+- **Endogenous weighting**: KL(WM_pred || actual_target) used as self-confidence during training (see below)
+
+### Training
+
+World Model is trained first (supervised on DS-evaluated samples), then frozen during RL fine-tuning where it serves as the reward function:
+
+```
+reward = cosine_similarity(WM_prediction, DS_target) ∈ [0, 1]
+```
+
+---
+
+## Noise Adaptation (2 Layers Implemented)
+
+The system has two implemented mechanisms for handling noisy training data. A third layer is designed but not yet coded.
+
+### Layer 1 (Implemented): DS Confidence Temperature Modulation
+
+**Location**: `src/rl_train.py` — `project_to_hexagram_space()`
+
+```
+if satisfaction is not None:
+    effective_temp = max(0.1, 1.0 - abs(satisfaction))
+```
+
+- High |satisfaction| (DS is confident) → low temperature → sharp target → strong learning
+- Low |satisfaction| (DS is uncertain) → high temperature → near-uniform → near-zero loss
+- **No external noise classifiers** — the DS evaluator's own uncertainty IS the noise detector
+
+Callers that pass `satisfaction`:
+- `scripts/ds_train.py` — both WM training and RL fine-tuning phases
+
+### Layer 2 (Implemented): Endogenous Prediction Surprise
+
+**Location**: `src/world_model.py` — `compute_endogenous_weight()`
 
 ```python
-wm.compute_endogenous_weight(probes, hex_id, target_dist) → weight [0, 1]
+def compute_endogenous_weight(self, probes, hexagram_id, target_dist):
+    pred_dist, _ = self.forward(probes, hexagram_id)
+    kl = KL(pred_dist || target_dist)
+    weight = 1.0 - sigmoid((kl - 0.03) * 50)
+    return weight   # [0, 1]
 ```
 
-Uses KL divergence between WM's prediction and actual target as a self-confidence metric. Called during training to modulate each sample's contribution to the loss.
+- Low KL (WM predicted correctly) → weight ≈ 1.0 → strong learning
+- High KL (WM prediction missed) → weight ≈ 0.1 → noise suppressed
+- **Fully endogenous** — no external evaluator needed after initial training
 
-## Training Pipeline
+Integrated into:
+- `scripts/ds_train.py` — via `--endogenous` flag (passes weight to WM training loop)
+- `src/flywheel.py` — default on for 12h autonomous training
 
-### DS-Supervised Training
+### Layer 3 (Designed, Not Implemented): Sampling Stratification
+
+Goal: Classify buffer samples by quality before training, stratified sampling to ensure diverse coverage. Code not yet written — documented here for future implementation.
+
+---
+
+## Evaluation & Training Pipeline
+
+### DS-Supervised Training (`scripts/ds_train.py`)
 
 ```
-scripts/ds_train.py \
+python scripts/ds_train.py \
   --version v15 \
   --buffer data/flywheel_buffer.jsonl \
   --ds-results data/ds_eval_all.jsonl \
   --endogenous
-
-Phase 1: WM training on all samples with power-law + endogenous weighting
-Phase 2: RL fine-tuning (200 episodes, 64-dim projection reward)
 ```
 
-### Flywheel (12h cron)
+Two phases:
+1. **WM training**: Each sample → YiCeNet forward (probes + hex) → WM prediction → DS target → KL loss × power-law weight × endogenous weight
+2. **RL fine-tuning**: 200 episodes, 64-dim projection reward via WM
 
-```
-src/flywheel.py → _collect_new_messages → _update_world_model_v2 → _rl_fine_tune_v5
-```
+### Autonomous Flywheel (`src/flywheel.py`)
 
-The flywheel runs autonomously every 12 hours. The WM gets incremental updates with endogenous noise-weighting. New checkpoints are registered in `checkpoints/registry.json` for hot-swap.
+Runs via cron every 12h:
+1. `_collect_new_messages()` — scan Hermes session DB for new user messages
+2. `_update_world_model_v2()` — incremental WM update with power-law + endogenous weighting
+3. `_rl_fine_tune_v5()` — 200-ep RL, registers result in registry.json
+
+### Batch DS Evaluation (`scripts/ds_evaluate.py`)
+
+Sends samples to DeepSeek API in batches (default 20/batch), returns satisfaction scores and signal flags. Each sample costs ~200 tokens.
+
+---
 
 ## Checkpoint Management
 
+### Registry (`checkpoints/registry.json`)
+
+```json
+{
+  "active":  {"version": "v15", "path": "...yicenet_v15.pt", "avg_reward": 0.982},
+  "ready":   {"version": "v14-sat", "path": "...yicenet_v14_sat.pt", ...},
+  "fallback": {...},
+  "history": [...]
+}
 ```
-scripts/checkpoint_manager.py  [prune|clean|register|fresh]
 
-Keeps: base model (v4) + active model + top 3 scoring checkpoints
-Hot-swap: hermes_tool.py checks registry.json on each predict call
-```
+### Hot-Swap
 
-## Performance (v15)
+`src/hermes_tool.py` checks registry.json on each `yicenet_predict()` call. If `active.version` changed since engine load, calls `engine.switch_model(new_path)` — no restart needed.
 
-| Metric | v4 | v6 | v14-SAT | v15-Endogenous |
-|--------|----|----|---------|----------------|
-| Unique hexagrams | 48/64 | 38/64 | **60/64** | 58/64 |
-| Confidence | 0.708 | **0.981** | 0.908 | **0.966** |
-| Diversity | 0.240 | 0.190 | **0.300** | 0.290 |
-| RL Reward | — | — | 0.984 | 0.982 |
+### Pruning
+
+`scripts/checkpoint_manager.py prune` keeps:
+- Base model (v4) — never deleted
+- Active model — never deleted
+- Top 3 scoring (reward × 100 + version_number)
+
+---
 
 ## Project Structure
 
 ```
 YiCeNet/
-├── src/
-│   ├── model.py          # YiCeNet model (5.6M params)
-│   ├── world_model.py    # Dual-head World Model v2
-│   ├── flywheel.py       # 12h autonomous training cron
-│   ├── hermes_tool.py    # Hermes integration (hot-swap)
-│   ├── yicenet_engine.py # Inference engine
-│   ├── rl_train.py       # RL + projection components
-│   └── ...
-├── scripts/
-│   ├── ds_train.py       # DS-supervised training
-│   ├── ds_evaluate.py    # Batch DS evaluation
-│   └── checkpoint_manager.py
-├── checkpoints/
-│   ├── registry.json     # Active/ready/fallback model registry
-│   ├── yicenet_v4.pt     # Base model (always kept)
-│   └── yicenet_v15.pt    # Current best model
-└── data/
-    └── flywheel_buffer.jsonl  # Conversation buffer
+├── src/                    # Implementation (11 files, ~3500 lines)
+│   ├── model.py            YiCeNet model — TinyEncoder + GumbelRouter + ValueNet + Decoder
+│   ├── world_model.py      WorldModelV2 — dual-head + power-law + endogenous weight
+│   ├── flywheel.py         12h autonomous training pipeline
+│   ├── hermes_tool.py      Hermes integration with hot-swap
+│   ├── yicenet_engine.py   Inference engine with switch_model()
+│   ├── rl_train.py         project_to_hexagram_space + compute_hexagram_reward
+│   ├── config.py           YiCeNetConfig — all hyperparameters
+│   ├── tokenizer.py        BPE → YiCeNet token rebucket
+│   ├── encoder.py          TinyEncoder implementation
+│   ├── probes.py           probe tensor extraction
+│   ├── decoder.py          ActionDecoder
+│   ├── value_net.py        ValueNetwork
+│   ├── hexagram.py         Hexagram line pattern + candidate generation
+│   ├── train.py            Two-stage training entry (pretrain + RL)
+│   ├── train_value_net.py  Value net standalone training
+│   ├── metrics.py          Evaluation metrics
+│   ├── constants.py        Hardcoded lookup tables
+│   ├── external_metrics.py External satisfaction computation
+│   └── interfaces.py       Type stubs
+├── scripts/                # 3 operational scripts
+│   ├── ds_train.py         DS-supervised training (--endogenous flag)
+│   ├── ds_evaluate.py      Batch DS evaluation via API
+│   └── checkpoint_manager.py  Registry management + pruning + hot-swap
+├── docs/
+│   └── ARCHITECTURE.md     This file
+└── README.md
 ```
+
+## Model Comparision (v4 vs v6 vs v15)
+
+| Metric | v4 | v6 | v15 (endogenous) |
+|--------|------|------|--------|
+| Architecture | Pretrained | RL fine-tuned | DS-supervised |
+| Unique hexagrams | 48/64 | 38/64 | **58/64** |
+| Confidence | 0.708 | 0.981 | **0.966** |
+| Hexagram diversity | 0.240 | 0.190 | **0.290** |
+| RL avg reward | — | — | **0.982** |
+| Training samples | 10K synthetic | 200 real | **997 real** |
+| Noise adaptation | None | None | **2 layers** |
