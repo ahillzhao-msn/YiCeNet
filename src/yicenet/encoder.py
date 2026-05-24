@@ -67,7 +67,7 @@ class TinyEncoder(nn.Module):
     Input:  token ids (B, T)
     Output: pooled 256-dim state vector h
 
-    Params: ~8.0M (80% from token embedding, 20% from transformer blocks)
+    Params: ~5.7M total (2.05M token embedding + ~3.3M transformer blocks + ~0.3M heads)
     """
 
     def __init__(self, config):

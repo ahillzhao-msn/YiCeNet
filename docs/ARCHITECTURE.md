@@ -4,7 +4,7 @@
 
 ## Overview
 
-YiCeNet is a tiny neural network (~5.6M params, 22MB) that learns I-Ching hexagram prediction as a proxy for conversational navigation. It maps user text to one of 64 hexagrams, then selects an orchestration action.
+YiCeNet is a tiny neural network (~5.7M params, 22MB) that learns I-Ching hexagram prediction as a proxy for conversational navigation. It maps user text to one of 64 hexagrams, then selects an orchestration action.
 
 ```
 Input ─→ TinyEncoder ─→ h (256-dim) ─→ GumbelRouter ─→ hexagram (1/64)

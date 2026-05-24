@@ -1,7 +1,7 @@
 """
 YiCeNet (易策网络) — Full model.
 
-~10.2M parameters, <100 MB memory, <3 ms inference.
+~5.7M parameters (5,671,859), ~22 MB FP32, <3 ms inference.
 
 Architecture:
   Input → TinyEncoder (8M) → h (256-dim)

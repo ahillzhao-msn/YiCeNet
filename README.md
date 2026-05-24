@@ -1,6 +1,6 @@
 # YiCeNet (易策网络)
 
-> I-Ching inspired tiny neural network (~5.6M params) for conversational navigation.
+> I-Ching inspired tiny neural network (~5.7M params, 22MB) for conversational navigation.
 
 YiCeNet maps user text to one of 64 I-Ching hexagrams, learning to recognize conversational patterns and select appropriate orchestration actions.
 
