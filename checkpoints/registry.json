@@ -6,7 +6,14 @@
     "created": "2026-05-24T14:39:32",
     "notes": "vv15 auto-detected"
   },
-  "ready": null,
+  "ready": {
+    "version": "v14",
+    "path": "yicenet_v14.pt",
+    "avg_reward": 0.9946,
+    "win_rate": 1.0,
+    "created": "2026-05-24T14:46:02",
+    "notes": "Flywheel v5 auto-train 2026-05-24"
+  },
   "fallback": null,
   "history": [
     {
@@ -15,6 +22,14 @@
       "avg_reward": 0.9817,
       "created": "2026-05-24T14:39:32",
       "notes": "vv15 auto-detected"
+    },
+    {
+      "version": "v14",
+      "path": "yicenet_v14.pt",
+      "avg_reward": 0.0,
+      "win_rate": 0.0,
+      "created": "2026-05-24T14:46:02",
+      "notes": "Flywheel v5 auto-train 2026-05-24"
     }
   ]
 }

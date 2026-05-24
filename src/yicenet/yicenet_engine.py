@@ -125,6 +125,9 @@ class YiCeNetEngine:
                     with open(reg_path) as f:
                         reg = json.load(f)
                     ckpt = reg.get("active", {}).get("path", "")
+                    # Resolve relative path (relative to checkpoints/)
+                    if ckpt and not os.path.isabs(ckpt):
+                        ckpt = os.path.join(self._project_root, "checkpoints", ckpt)
                 except Exception:
                     pass
 

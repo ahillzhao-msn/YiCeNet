@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 # ── Paths ──
-YICENET_ROOT = Path(__file__).parent.parent
+YICENET_ROOT = Path(__file__).resolve().parent.parent.parent  # src/yicenet/flywheel.py → ∼/YiCeNet
 STATE_FILE = Path.home() / ".hermes" / "data" / "yicenet_flywheel.json"
 DB_PATH = str(Path.home() / ".hermes" / "state.db")
 CHECKPOINT_DIR = YICENET_ROOT / "checkpoints"
@@ -323,7 +323,7 @@ def _update_world_model_v2(buffer_path: Path):
         # 全內生噪聲感知：WM 自己判斷噪聲
         try:
             endo_w = wm.compute_endogenous_weight(
-                probes_t.unsqueeze(0), hex_id.unsqueeze(0),
+                probes_t.unsqueeze(0), hex_id,
                 target_dist.unsqueeze(0),
             ).item()
             w_slow *= endo_w
@@ -332,7 +332,7 @@ def _update_world_model_v2(buffer_path: Path):
             pass  # 永不中斷飛輪
 
         # Forward through WM
-        pred_dist, pred_ext = wm(probes_t.unsqueeze(0), hex_id.unsqueeze(0))
+        pred_dist, pred_ext = wm(probes_t.unsqueeze(0), hex_id)
 
         # Weighted loss
         loss_a = (w_slow * F.kl_div(
@@ -451,7 +451,7 @@ def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
 
         # WM prediction
         with torch.no_grad():
-            wm_pred_dist, _ = wm(probes_t.unsqueeze(0), hex_id.unsqueeze(0))
+            wm_pred_dist, _ = wm(probes_t.unsqueeze(0), hex_id)
 
         # Reward = distribution similarity
         reward = compute_hexagram_reward(wm_pred_dist, target_dist.unsqueeze(0))
@@ -553,7 +553,7 @@ def _record_evaluation(version: str, buffer_path: Path, checkpoint_path: str = "
             if wm_path.exists():
                 wm = WorldModelV2.load(str(wm_path), device)
                 probes_t = out["probes"].to(device)
-                wm_pred, _ = wm(probes_t.unsqueeze(0), hex_idx.unsqueeze(0))
+                wm_pred, _ = wm(probes_t.unsqueeze(0), hex_idx)
             else:
                 wm_pred = None
 
@@ -690,7 +690,7 @@ def _auto_promote(buffer_path: Path):
             if wm_path.exists():
                 wm = WorldModelV2.load(str(wm_path), device)
                 probes_t = out["probes"].to(device)
-                wm_pred, _ = wm(probes_t.unsqueeze(0), out["hexagram_idx"].unsqueeze(0))
+                wm_pred, _ = wm(probes_t.unsqueeze(0), out["hexagram_idx"])
                 reward_val = compute_hexagram_reward(
                     wm_pred.cpu(), target_dist.unsqueeze(0)
                 ).item()

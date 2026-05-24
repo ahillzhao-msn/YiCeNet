@@ -13,7 +13,13 @@ import os
 import sys
 
 # Hermes tools discovery: when loaded from ~/.hermes/hermes-agent/tools/
-from tools.registry import registry
+try:
+    from tools.registry import registry
+except ModuleNotFoundError:
+    # Not running inside Hermes — this module is a Hermes tool, not a library.
+    # The actual functions (yicenet_predict, yicenet_switch) work fine via
+    # direct import when called with the right context.
+    registry = None
 
 # Resolve YiCeNet project root from hermes-agent/tools/ → ~/YiCeNet
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -214,27 +220,28 @@ YICENET_SWITCH_SCHEMA = {
 }
 
 
-# ── Register tools ──
-registry.register(
-    name="yicenet_predict",
-    toolset="file",
-    schema=YICENET_SCHEMA,
-    handler=lambda args, **kw: yicenet_predict(
-        task_brief=args.get("task_brief", ""),
-        temperature=float(args.get("temperature", 0.1)),
-        deterministic=bool(args.get("deterministic", False)),
-    ),
-    check_fn=check_yicenet_requirements,
-    emoji="☯",
-)
+# ── Register tools (Hermes only) ──
+if registry is not None:
+    registry.register(
+        name="yicenet_predict",
+        toolset="file",
+        schema=YICENET_SCHEMA,
+        handler=lambda args, **kw: yicenet_predict(
+            task_brief=args.get("task_brief", ""),
+            temperature=float(args.get("temperature", 0.1)),
+            deterministic=bool(args.get("deterministic", False)),
+        ),
+        check_fn=check_yicenet_requirements,
+        emoji="☯",
+    )
 
-registry.register(
-    name="yicenet_switch",
-    toolset="file",
-    schema=YICENET_SWITCH_SCHEMA,
-    handler=lambda args, **kw: yicenet_switch(
-        checkpoint=args.get("checkpoint", ""),
-    ),
-    check_fn=check_yicenet_requirements,
-    emoji="🔄",
-)
+    registry.register(
+        name="yicenet_switch",
+        toolset="file",
+        schema=YICENET_SWITCH_SCHEMA,
+        handler=lambda args, **kw: yicenet_switch(
+            checkpoint=args.get("checkpoint", ""),
+        ),
+        check_fn=check_yicenet_requirements,
+        emoji="🔄",
+    )

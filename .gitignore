@@ -23,8 +23,7 @@ logs/
 *.log
 
 # Model weights (track specific trained versions, ignore ephemeral)
-checkpoints/*_v4.pt
-checkpoints/*_v6.pt
+checkpoints/yicenet_v[0-9]*.pt
 checkpoints/*_latest.pt
 
 # Data (regenerated)
