@@ -151,6 +151,21 @@ class YiCeNetEngine:
         self._config = YiCeNetConfig()
         self._model = YiCeNet(self._config).to(device).eval()
 
+        # Backward compat shim: old checkpoints reference src.* module paths
+        # which moved to yicenet.* in the restructure.
+        import types
+        if 'src' not in sys.modules:
+            _src = types.ModuleType('src')
+            _src.__path__ = []
+            sys.modules['src'] = _src
+        import importlib
+        for _mod in ['model', 'config', 'tokenizer', 'encoder', 'decoder', 'hexagram', 'value_net']:
+            if f'src.{_mod}' not in sys.modules:
+                try:
+                    sys.modules[f'src.{_mod}'] = importlib.import_module(f'yicenet.{_mod}')
+                except ImportError:
+                    pass
+
         saved = torch.load(ckpt, map_location=device, weights_only=False)
         self._model.load_state_dict(saved["model_state_dict"], strict=False)
         if "tau" in saved:

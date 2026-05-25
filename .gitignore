@@ -38,7 +38,8 @@ src/yicenet/data/qwen_to_yicenet.json
 dist/
 build/
 
-# Keep the structure
+# Local setup instructions
+SETUP_INSTRUCTIONS.md
 data/.gitkeep
 
 # Flywheel operational data (auto-generated)
