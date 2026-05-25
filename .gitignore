@@ -47,3 +47,6 @@ checkpoints/world_model_best.pt
 checkpoints/world_model_v*.pt
 checkpoints/yicenet_rl_best.pt
 checkpoints/v*_metrics.json
+
+# Checkpoint registry (auto-generated, references local model paths)
+checkpoints/registry.json
