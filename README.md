@@ -5,13 +5,11 @@
 
 ---
 
-[**中文**](#中文) · [**English**](#english)
+[**English**](#english)
 
 ---
 
 <a id="中文"></a>
-
-# 中文文档
 
 ## 这是什么
 
@@ -75,7 +73,7 @@ Gumbel 路由器 ── 离散采样 → 卦象 ID
 
 ```
 使用 → 收集反馈 → 微调世界模型 → 更新策略 → 更懂你
-↑______________________________________________|
+↑____________________________________________|
 ```
 
 ---
@@ -91,7 +89,7 @@ Gumbel 路由器 ── 离散采样 → 卦象 ID
 | API 监督 RL 训练 | ✅ | `scripts/rl_train.py` |
 | 内源噪声加权 | ✅ | `src/yicenet/world_model.py` → `src/yicenet/flywheel.py` |
 | 热切换检查点注册 | ✅ | `scripts/checkpoint_manager.py` |
-| 12 小时飞轮自学习 | ✅ | `src/yicenet/flywheel.py` |
+| 每6小时飞轮自学习 | ✅ | `src/yicenet/flywheel.py` |
 | 采样分层（计划中） | ⏳ | 未实现 |
 
 ---
@@ -269,7 +267,7 @@ YiCeNet/
 [MIT](LICENSE) © ahillzhao-msn
 
 ```
-         ☰  ☷  ☳  ☴  ☵  ☲  ☶  ☱
+        ☰  ☷  ☳   ☴  ☵  ☲  ☶  ☱
         乾  坤  震  巽  坎  离  艮  兑
         天  地  雷  风  水  火  山  泽
 ```
@@ -278,15 +276,13 @@ YiCeNet/
 🔱 如果你想拥有自己的模型，请 Fork 并训练。
 🔥 如果你看到同样的未来，[请联系我](https://github.com/ahillzhao-msn)。
 
----
 
 ---
+ [**中文版**](#中文) 
 
 <a id="english"></a>
 
-# English Documentation
-
-## What Is This
+## What Is YiCeNet
 
 YiCeNet is an I-Ching-inspired tiny neural network (~5.6M params, 22MB) that maps user intent to one of 64 hexagrams for fast, explainable orchestration decisions between tools, agents, and workflows.
 
@@ -537,9 +533,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 [MIT](LICENSE) © ahillzhao-msn
 
 ```
-         ☰  ☷  ☳  ☴  ☵  ☲  ☶  ☱
-        Qian Kun Zhen Xun Kan Li Gen Dui
-        Sky Earth Thunder Wind Water Fire Mountain Lake
+        ☰    ☷     ☳     ☴    ☵    ☲     ☶     ☱
+       Qian  Kun   Zhen   Xun   Kan   Li    Gen    Dui
+       Sky  Earth Thunder Wind Water Fire Mountain Lake
 ```
 
 ⭐ If this project resonates, give it a star.
