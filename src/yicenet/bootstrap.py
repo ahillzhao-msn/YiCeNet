@@ -27,17 +27,13 @@ from typing import Optional
 # ── 路徑 ───────────────────────────────────────
 
 def _project_root() -> Path:
-    """自動檢測 YiCeNet 項目根目錄。"""
-    # 安裝為包時：從 yicenet.__file__ 推導
-    try:
-        import yicenet
-        return Path(yicenet.__file__).resolve().parent.parent
-    except ImportError:
-        pass
-    # 從腳本位置推導
+    """自動檢測 YiCeNet 項目根目錄（僅從 __file__ 推導，不依賴已導入的包）。"""
     p = Path(__file__).resolve().parent.parent
     if (p / "pyproject.toml").exists():
         return p
+    # 也可能是 scripts/ 的上兩層（__file__ 在包內時）
+    if (p.parent / "pyproject.toml").exists():
+        return p.parent
     return Path.cwd()
 
 
