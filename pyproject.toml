@@ -30,3 +30,7 @@ exclude = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.txt"]
+
+[project.scripts]
+yicenet-bootstrap = "yicenet.bootstrap:main"
+yicenet-flywheel = "yicenet.flywheel:main"
