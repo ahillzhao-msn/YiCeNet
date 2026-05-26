@@ -48,7 +48,6 @@ src/checkpoints/.gitkeep
 
 # Flywheel operational data (auto-generated)
 src/data/*
-checkpoints/world_model_best.pt
 checkpoints/world_model_v*.pt
 checkpoints/yicenet_rl_best.pt
 checkpoints/v*_metrics.json
