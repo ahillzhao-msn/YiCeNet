@@ -51,7 +51,14 @@ def _load_vocab_map() -> dict[int, int]:
         _VOCAB_MAP = {int(k): v for k, v in raw.items()}
         return _VOCAB_MAP
 
-    # Fallback: modulo mapping (deterministic, no collision guarantee)
+    # Fallback: no vocab map — all tokens become UNK (ID 1)
+    # This means the model receives only UNK tokens and predictions are random.
+    import warnings
+    warnings.warn(
+        "YiCeNet vocab mapping not found. All tokens will be UNK. "
+        "Run yicenet.bootstrap.build_vocab() to build vocabulary from session DB.",
+        RuntimeWarning
+    )
     _VOCAB_MAP = {}
     return _VOCAB_MAP
 

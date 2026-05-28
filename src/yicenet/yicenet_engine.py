@@ -385,8 +385,8 @@ class YiCeNetEngine:
 
         ready = reg["ready"]
         active = reg.get("active")
-
-        if active and ready.get("win_rate", 0) <= active.get("win_rate", 0) + 0.05:
+        # Perform switch (≥3% improvement threshold)
+        if ready.get("win_rate", 0) < active.get("win_rate", 0) + 0.03:
             return {"should_switch": False, "reason": "Insufficient improvement"}
 
         # Perform switch

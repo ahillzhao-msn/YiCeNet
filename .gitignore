@@ -54,3 +54,9 @@ checkpoints/v*_metrics.json
 
 # Checkpoint registry (auto-generated, references local model paths)
 checkpoints/registry.json
+
+# SAP agent files (not part of YiCeNet)
+AGENTS.md
+.github/.sap-adt-version.json
+.github/agents/
+.github/skills/

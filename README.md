@@ -93,8 +93,15 @@ cd YiCeNet
 # Editable install
 pip install -e .
 
-# Demo
-python demo.py
+# Verify
+python3 -c "import yicenet; print(yicenet.__version__)"
+
+# Quick inference
+python3 -c "
+from yicenet import YiCeNetEngine
+engine = YiCeNetEngine()
+print(engine.predict_structured('search knowledge base'))
+"
 ```
 
 ### Basic Usage
@@ -105,13 +112,13 @@ from yicenet import YiCeNetEngine
 engine = YiCeNetEngine()
 
 result = engine.predict(
-    task="Analyze sales data and generate a visualization report",
-    available_agents=["data_analyzer", "chart_generator", "report_writer"],
+    "Analyze sales data and generate a visualization report"
 )
 
-print(f"Agent sequence: {result.agent_sequence}")
-print(f"Reasoning path: {result.winning_path}")  # interpretable hexagram trace
-print(f"Latency: {result.latency_ms}ms")          # ~4ms
+print(f"Hexagram: {result['hexagram_name']} (#{result['hexagram_number']})")
+print(f"Action: {result['action_name']}")
+print(f"Q-values: {result['q_values']}")
+print(f"Candidates: {len(result['candidates'])} structural variants evaluated")
 ```
 
 ### Training

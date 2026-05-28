@@ -12,6 +12,8 @@ YiCeNet 預計算常數 — 所有硬編碼卦象數據集中管理。
 from typing import Optional
 import torch
 
+from .config import YiCeNetConfig
+
 
 class PrecomputedHexagramTables:
     """
@@ -35,9 +37,13 @@ class PrecomputedHexagramTables:
         """
         Args:
             hexagram_patterns: 64 個整數，每整數低6位=六爻模式。
-                               若為 None 則從默認 King Wen 順序構建。
+                               若為 None 則從 YiCeNetConfig 讀取 King Wen 順序。
         """
-        patterns = hexagram_patterns if hexagram_patterns is not None else self._default_patterns()
+        if hexagram_patterns is not None:
+            patterns = hexagram_patterns
+        else:
+            # 從 YiCeNetConfig 獲取 canonical 定義（唯一真理來源）
+            patterns = YiCeNetConfig().hexagram_patterns
         assert len(patterns) == 64, f"需要 64 個卦象模式，收到 {len(patterns)}"
 
         # ── (64,) integer patterns ──
@@ -50,28 +56,6 @@ class PrecomputedHexagramTables:
         self._lower_trigrams: Optional[torch.Tensor] = None
         self._opposite_upper: Optional[torch.Tensor] = None
         self._hamming_matrix: Optional[torch.Tensor] = None
-
-    @staticmethod
-    def _default_patterns() -> list[int]:
-        """King Wen 順序 64 卦六爻模式（跟 config.py 一致）。"""
-        return [
-            0b111111, 0b000000, 0b010001, 0b100010,
-            0b010111, 0b111010, 0b000010, 0b010000,
-            0b110111, 0b111011, 0b111000, 0b000111,
-            0b101111, 0b111101, 0b001000, 0b000100,
-            0b011001, 0b100110, 0b100101, 0b101001,
-            0b100001, 0b011110, 0b100111, 0b111001,
-            0b111100, 0b001111, 0b000110, 0b011000,
-            0b010010, 0b101101, 0b001110, 0b011100,
-            0b001100, 0b110000, 0b000011, 0b110011,
-            0b101011, 0b110101, 0b101110, 0b011101,
-            0b110010, 0b010011, 0b100011, 0b110001,
-            0b011110, 0b011011, 0b110110, 0b001001,
-            0b011101, 0b101110, 0b101100, 0b001101,
-            0b110100, 0b001011, 0b101010, 0b010101,
-            0b011001, 0b100110, 0b110001, 0b100011,
-            0b110010, 0b010011, 0b011111, 0b111110,
-        ]
 
     # ── 惰性初始化屬性 ──
 

@@ -101,7 +101,7 @@ No systemd service, web server, or long-running daemon is required. The flywheel
 | `EVAL_API_KEY` | For training | — | API key for reward scoring (also reads `DEEPSEEK_API_KEY`) |
 | `EVAL_API_URL` | Optional | DeepSeek | OpenAI-compatible endpoint URL |
 | `EVAL_MODEL` | Optional | `deepseek-chat` | Model name for evaluation |
-| `YICENET_ROOT` | Optional | auto-detected | Override project root (when installed as pip package) |
+| `YICENET_HOME` | Optional | auto-detected | Override project root (when installed as pip package) |
 
 ### Path Convention
 
@@ -143,7 +143,7 @@ YiCeNet/
 The project has zero hardcoded absolute paths. Root resolution is:
 - Scripts: relative to `Path(__file__).parent.parent`
 - Installed package: resolved via `yicenet.__file__`
-- Override: `YICENET_ROOT` env var
+- Override: `YICENET_HOME` env var
 
 ## Quick Start
 
