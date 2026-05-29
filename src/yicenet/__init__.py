@@ -9,3 +9,11 @@ __version__ = "15.0.0"
 from .yicenet_engine import YiCeNetEngine, get_engine, predict
 from .model import YiCeNet, count_parameters
 from .config import YiCeNetConfig, yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
+from .display import format_prediction, hexagram_symbol
+
+__all__ = [
+    "YiCeNetEngine", "get_engine", "predict",
+    "YiCeNet", "count_parameters",
+    "YiCeNetConfig", "yicenet_home", "yicenet_data_dir", "yicenet_checkpoint_dir",
+    "format_prediction", "hexagram_symbol",
+]

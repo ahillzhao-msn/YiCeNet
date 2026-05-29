@@ -32,6 +32,85 @@ WM_FAST_TAU_DAYS = 3.0
 WM_ALPHA = 1.5
 WM_BETA = 0.3
 
+# ── 外部 Producer 緩衝區 ──
+# 任何系統（Loom、其他）調用 submit_trajectory() 投遞結構化軌跡，
+# 由 flywheel_run() 的 cron tick 消費。
+
+FLYWHEEL_BUFFER: list[dict] = []
+
+
+def submit_trajectory(data: dict) -> None:
+    """標準介面——任何 Producer 調用此函數投遞軌跡。
+
+    data 格式（標準化 v1）：
+    {
+        "producer": "loom",                  # 來源標識
+        "version": 1,                         # 介面版本
+        "conversation_id": "...",
+        "trajectory": {...},                  # 獎勵信號（由 reward_for_flywheel() 產生）
+        "embedding": [0.1, 0.2, ...],         # 可選：預計算的嵌入向量
+        "raw_messages": [...],                # 可選：原始訊息（當 embedding 未提供時）
+    }
+    """
+    FLYWHEEL_BUFFER.append(data)
+
+
+def _loom_to_yicenet(trajectory: dict) -> dict:
+    """將 Loom 獎勵信號映射為 YiCeNet 內部 reward_sig 格式。"""
+    return {
+        "continued": trajectory.get("n_sessions", 1) > 1,
+        "corrected": (trajectory.get("correction_rate", 0) or 0) > 0,
+        "completed": trajectory.get("n_turns", 0) >= 1,
+        "praised": False,           # Loom 暫無法判斷
+        "abandoned": False,         # Loom 暫無法判斷
+        "token_cost": trajectory.get("total_tokens", 0),
+        "token_efficiency": trajectory.get("token_efficiency", 0),
+    }
+
+
+def _consume_external_buffer(buffer_path: Path) -> int:
+    """消費外部 Producer 投遞的軌跡，寫入 buffer 供訓練使用。
+
+    Returns:
+        寫入的樣本數
+    """
+    if not FLYWHEEL_BUFFER:
+        return 0
+
+    count = 0
+    os.makedirs(os.path.dirname(buffer_path), exist_ok=True)
+    with open(buffer_path, "a") as f:
+        while FLYWHEEL_BUFFER:
+            item = FLYWHEEL_BUFFER.pop(0)
+            trajectory = item.get("trajectory", {})
+            reward_sig = _loom_to_yicenet(trajectory)
+
+            # 構建標準樣本
+            sample = {
+                "user_text": f"[{item.get('producer', 'external')}] "
+                             f"{item.get('conversation_id', '?')}",
+                "producer": item.get("producer", "unknown"),
+                "conversation_id": item.get("conversation_id", ""),
+                "hexagram_evolution": trajectory.get("hexagram_evolution", []),
+                "timestamp": time.time(),
+                "token_cost": reward_sig.get("token_cost", 0),
+                "continued": reward_sig.get("continued", False),
+                "corrected": reward_sig.get("corrected", False),
+                "completed": reward_sig.get("completed", False),
+                "praised": reward_sig.get("praised", False),
+                "abandoned": reward_sig.get("abandoned", False),
+                "satisfaction": 0.0,
+            }
+            # 若有 embedding，一併寫入
+            emb = item.get("embedding", [])
+            if emb:
+                sample["embedding"] = emb
+
+            f.write(json.dumps(sample) + "\n")
+            count += 1
+
+    return count
+
 
 def load_state() -> dict:
     """Load flywheel state."""
@@ -150,6 +229,12 @@ def flywheel_run():
     print(f"  Total samples processed: {state['total_samples']}")
     print(f"  Next version: v{state['version_counter']}")
 
+    # ── Step 0: Consume external producer buffer ──
+    buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
+    ext_count = _consume_external_buffer(buffer_path)
+    if ext_count:
+        print(f"    Consumed {ext_count} external trajectories")
+
     # ── Step 1: Scan new data ──
     print("\n  Step 1: Scanning for new messages...")
     new_samples = scan_new_messages(state)
@@ -163,7 +248,6 @@ def flywheel_run():
 
     # ── Step 2: Append to training buffer ──
     print("\n  Step 2: Appending to training buffer...")
-    buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
     os.makedirs(os.path.dirname(buffer_path), exist_ok=True)
 
     new_count = 0

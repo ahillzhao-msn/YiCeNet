@@ -81,6 +81,36 @@ Use → Collect feedback → Fine-tune world model → Update policy → Knows y
 
 Each user interaction becomes a training signal. The model continuously adapts to your decision patterns — fully on-device.
 
+### External Producer API
+
+Any module can feed training data to YiCeNet's flywheel via the standard `submit_trajectory()` interface:
+
+```python
+from yicenet.flywheel import submit_trajectory
+
+submit_trajectory({
+    "producer": "loom",          # source identifier
+    "version": 1,                # schema version
+    "conversation_id": "...",
+    "trajectory": {...},         # reward_for_flywheel() output
+    "embedding": [...],          # topic centroid
+})
+```
+
+**Two data paths converge in the flywheel buffer:**
+
+```
+Internal Producer (session DB scan) ──┐
+                                      ├──→ flywheel_buffer.jsonl ──→ RL train
+External Producer (submit_trajectory) ─┘
+```
+
+- **Internal** — The cron-managed session DB scanner (backward compatible, unchanged)
+- **External** — `submit_trajectory()` memory buffer, consumed by the next flywheel run
+- The RL training pipeline (`rl_train.py`) processes both sources identically
+
+The external API is non-fatal — YiCeNet not installed? `submit_trajectory()` simply does nothing. This lets Loom and other agents feed data without worrying about deployment order.
+
 ---
 
 ## Quick Start
@@ -177,7 +207,7 @@ YiCeNet/
 │   ├── world_model.py     # WorldModelV2: prediction → endogenous weight
 │   ├── value_net.py       # Value Network (41K params)
 │   ├── yicenet_engine.py  # Unified inference API
-│   ├── flywheel.py        # Online flywheel training pipeline
+│   ├── flywheel.py        # Online flywheel: session DB scan + external producer buffer (`submit_trajectory()`) → RL fine-tune
 │   ├── config.py          # Configuration + hyperparameters
 │   ├── constants.py       # 64 hexagrams, I-Ching constants
 │   ├── tokenizer.py       # Qwen BPE tokenizer wrapper
