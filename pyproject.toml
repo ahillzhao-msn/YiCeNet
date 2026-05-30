@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yicenet"
-version = "15.0.0"
+version = "15.0.1"
 description = "I-Ching inspired tiny neural network for conversational navigation"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,0 +1,19 @@
+name: yicenet-hooks
+version: 1.0.0
+description: >
+  YiCeNet (易策网络) — standalone Hermes lifecycle hooks.
+  on_session_start → hexagram baseline
+  pre_llm_call → context sensing via yicenet_predict
+  post_api_request → accumulate token usage
+  post_llm_call → feedback() writes reward signal to flywheel buffer
+  Works independently of LOOM. Three-channel flywheel:
+    1. Session DB scan (intrinsic foundation)
+    2. LOOM solidify → yicenet buffer (when LOOM present)
+    3. This plugin's post_llm_call → feedback() (direct first-hand)
+author: Hermes Agent
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_api_request
+  - post_llm_call
+  - on_session_end

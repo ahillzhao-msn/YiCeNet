@@ -224,6 +224,54 @@ YiCeNet/
 
 ---
 
+### Advanced: Hermes Agent Plugin Integration
+
+For a zero-effort setup where YiCeNet runs on **every turn without explicit tool calls**, install the optional Hermes plugin. It wires `yicenet_predict` and `feedback()` as native lifecycle hooks.
+
+```bash
+# From the YiCeNet repo
+bash scripts/install/install-yicenet-hooks.sh
+```
+
+What it does:
+
+| Hook | When | What | Effect |
+|------|------|------|--------|
+| `on_session_start` | Session begins | `yicenet_predict` | Establishes hexagram baseline |
+| `pre_llm_call` | Before every response | `yicenet_predict(user_msg)` | Injects hexagram context into prompt |
+| `post_api_request` | After every API call | Accumulates token usage | First-hand cost data for reward |
+| `post_llm_call` | After every response | `feedback(reward_signal)` | Writes to flywheel training buffer |
+| `on_session_end` | Session ends | Logs metadata | Session wrap-up |
+
+**Three-Channel Flywheel:**
+
+```
+通道1 (intrinsic):  yicenet-flywheel cron → scan_new_messages(Session DB)
+通道2 (via LOOM):   LOOM solidify → _loom_to_yicenet() → flywheel buffer
+通道3 (direct):     post_llm_call → feedback() → flywheel_buffer.jsonl
+```
+
+Channel 1 is the foundation — YiCeNet's own intrinsic understanding via embedding-based learning from Session DB history. It works even when `predict()` is called standalone without an immediate response.
+
+Channel 2 is indirect — when LOOM is also installed, its `solidify()` already sends reward signals to YiCeNet.
+
+Channel 3 is this plugin — direct first-hand data that the Session DB cannot provide: accurate token costs, response length, model identity.
+
+All channels converge to `flywheel_buffer.jsonl`, consumed by the 6-hour flywheel cron for World Model + RL training.
+
+**Requirements:** Hermes Agent, YiCeNet pip-installed (`pip install -e ~/YiCeNet`).
+
+**To remove:**
+
+```bash
+hermes plugins disable yicenet-hooks
+rm -rf ~/.hermes/plugins/yicenet-hooks
+```
+
+This plugin works **independently** of LOOM. Install it alone for pure YiCeNet integration, or alongside `loom-hooks` for full LOOM + YiCeNet synergy.
+
+---
+
 ## What It Is and Isn't
 
 ### ✅ It Is
