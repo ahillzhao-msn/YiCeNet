@@ -134,8 +134,21 @@ def _record_api_usage(session_id: str, usage_data: dict | None) -> None:
 # ── Hook Handlers ─────────────────────────────────────────
 
 
+def _loom_hooks_active() -> bool:
+    """检查 loom-hooks 插件是否已加载（此时 yicenet-hooks 应自我抑制）。"""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        return 'loom-hooks' in pm._plugins
+    except Exception:
+        return False
+
+
 def on_session_start(**kw: Any) -> None:
-    """Establish hexagram baseline at session start."""
+    """Establish hexagram baseline at session start.
+    当 loom-hooks 活跃时跳过（LOOM 的 on_session_start + recommend 已处理）。"""
+    if _loom_hooks_active():
+        return
     yp = _get_yicenet()
     if not yp:
         return
@@ -149,7 +162,14 @@ def on_session_start(**kw: Any) -> None:
 
 
 def pre_llm_call(**kw: Any) -> dict | str | None:
-    """YiCeNet context sensing — inject hexagram before every turn."""
+    """YiCeNet context sensing — inject hexagram before every turn.
+
+    检测到 loom-hooks 插件已加载时跳过（LOOM 已处理），
+    避免每轮算两卦。yicenet-hooks 仅用于无 LOOM 的独立部署。
+    """
+    if _loom_hooks_active():
+        logger.debug("loom-hooks active — yicenet-hooks pre_llm_call skipped")
+        return None
     yp = _get_yicenet()
     if not yp:
         return None
