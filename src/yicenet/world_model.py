@@ -112,6 +112,7 @@ class WorldModelV2(nn.Module):
             nn.Linear(shared_dim, shared_dim // 2),
             nn.GELU(),
             nn.Linear(shared_dim // 2, num_external_metrics),
+            nn.Sigmoid(),  # 约束输出到[0,1]，匹配 target_ext 范围
         )
 
         self._init_weights()

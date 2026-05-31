@@ -673,6 +673,31 @@ def _record_evaluation(version: str, buffer_path: Path, checkpoint_path: str = "
     # Write to metrics.db
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE IF NOT EXISTS evaluations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        version TEXT NOT NULL,
+        avg_reward REAL NOT NULL,
+        win_rate REAL NOT NULL,
+        episodes INTEGER NOT NULL,
+        duration_sec REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hexagram_usage (
+        date TEXT NOT NULL,
+        hexagram_id INTEGER NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        avg_q_value REAL NOT NULL DEFAULT 0.0,
+        PRIMARY KEY (date, hexagram_id)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS trajectories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        hexagram_id INTEGER NOT NULL,
+        reward REAL NOT NULL,
+        terminal_type TEXT NOT NULL,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        token_cost INTEGER NOT NULL DEFAULT 0
+    )""")
     conn.execute("""
         INSERT INTO evaluations (version, avg_reward, win_rate, episodes, duration_sec)
         VALUES (?, ?, ?, ?, ?)
