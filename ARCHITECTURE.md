@@ -1,6 +1,6 @@
 # YiCeNet Architecture
 
-> Version 15.0.0 · 5.6M parameters · 4ms inference
+> Version 15.0.1 · 5.6M parameters · 4ms inference
 
 ---
 
