@@ -2,7 +2,7 @@
 YiCeNet (易策网络) — 卦象顯示格式化。
 
 獨立的顯示層，YiCeNet 自持。
-KAFED 只需調用 format_prediction(result, mode="compact") 並傳遞結果。
+# 外部調用: format_prediction(result, mode="compact")
 
 遇事不決問周易——YiCeNet 可在任何語境下直接調用。
 """
