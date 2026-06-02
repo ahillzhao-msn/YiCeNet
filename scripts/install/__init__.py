@@ -2,22 +2,16 @@
 YiCeNet (易策网络) — standalone Hermes lifecycle hooks.
 
 Three-channel flywheel data flow:
+  1. Session DB scan (intrinsic foundation)
+  2. LOOM solidify → yicenet buffer (when LOOM present)
+  3. This plugin: hooks → flywheel buffer (direct first-hand)
 
-  1. Session DB scan (scan_new_messages) — intrinsic foundation.
-     The model "understands" context through embedding-based
-     learning, not pattern matching.  Works even when predict()
-     is called standalone without an immediate response.
-
-  2. LOOM solidify → _loom_to_yicenet() → flywheel buffer
-     (when LOOM is present; indirect via LOOM's architecture).
-
-  3. This plugin: post_llm_call → feedback() → flywheel buffer.
-     First-hand data that Session DB cannot infer: accurate
-     token costs from post_api_request, real-time response
-     length, model identity.
-
-All learning is embedding-based.  The I-Ching principle is
-chaos and change (易) — there are no absolute patterns.
+四鉤子（詳見 LOOM docs/hooks-evolution.md）:
+  pre_llm_call → yicenet_predict (inject hexagram context; skip when LOOM)
+  pre_tool_call → hexagram calibration (observe only; skip when LOOM)
+  post_tool_call → tool-level reward signal (skip when LOOM)
+  post_llm_call → feedback() → flywheel buffer
+  post_api_request → accumulate token usage
 """
 
 from __future__ import annotations
@@ -33,7 +27,7 @@ from typing import Any
 logging.getLogger("yicenet-hooks").setLevel(logging.INFO)
 logger = logging.getLogger("yicenet-hooks")
 
-# YiCeNet source path (for yicenet_predict import)
+# YiCeNet source path
 _YICENET_SRC = os.path.expanduser("~/YiCeNet/src")
 if _YICENET_SRC not in sys.path:
     sys.path.insert(0, _YICENET_SRC)
@@ -62,10 +56,10 @@ def _get_yicenet():
 
 def feedback(session_id: str, response_chars: int,
               input_chars: int, n_turns: int,
-              model: str, platform: str) -> None:
-    """Write first-hand reward signal to flywheel training buffer.
+              model: str, platform: str,
+              success: bool = True) -> None:
+    """Write reward signal to flywheel training buffer.
 
-    Enhancement to YiCeNet's intrinsic Session DB scan.
     Supplies first-hand data: accurate token costs, response length,
     model identity — things the Session DB cannot provide directly.
     """
@@ -79,13 +73,8 @@ def feedback(session_id: str, response_chars: int,
         total = input_chars + response_chars + 1
         token_efficiency = response_chars / total if total > 0 else 0.5
 
-    # Model cost multiplier
-    cost_factors = {
-        "deepseek-v4-flash": 0.00015,
-        "deepseek-v4-pro": 0.0015,
-    }
-    model_key = model.split("/")[-1] if "/" in model else model
-    cost_per_char = cost_factors.get(model_key, 0.0003)
+    satisfaction = 0.6 if success else 0.2
+    satisfaction = min(1.0, satisfaction + token_efficiency * 0.3)
 
     sample = {
         "user_text": f"[yicenet-hooks] sid={session_id[:12]}",
@@ -100,11 +89,7 @@ def feedback(session_id: str, response_chars: int,
         "completed": n_turns > 0,
         "praised": False,
         "abandoned": False,
-        "satisfaction": round(
-            min(1.0, token_efficiency * 1.5)
-            * (1.0 - min(0.3, cost_per_char * 100)),
-            4
-        ),
+        "satisfaction": round(satisfaction, 4),
     }
 
     try:
@@ -131,11 +116,11 @@ def _record_api_usage(session_id: str, usage_data: dict | None) -> None:
     acc["efficiency"] = acc["total_output"] / total if total > 0 else 0.5
 
 
-# ── Hook Handlers ─────────────────────────────────────────
+# ── Skip-if-LOOM ───────────────────────────────────────
 
 
 def _loom_hooks_active() -> bool:
-    """检查 loom-hooks 插件是否已加载（此时 yicenet-hooks 应自我抑制）。"""
+    """Check if loom-hooks plugin is loaded — yicenet-hooks self-suppresses."""
     try:
         from hermes_cli.plugins import get_plugin_manager
         pm = get_plugin_manager()
@@ -144,9 +129,12 @@ def _loom_hooks_active() -> bool:
         return False
 
 
+# ── Hook Handlers ─────────────────────────────────────────
+
+
 def on_session_start(**kw: Any) -> None:
     """Establish hexagram baseline at session start.
-    当 loom-hooks 活跃时跳过（LOOM 的 on_session_start + recommend 已处理）。"""
+    Skip when loom-hooks active (LOOM handles it)."""
     if _loom_hooks_active():
         return
     yp = _get_yicenet()
@@ -164,8 +152,8 @@ def on_session_start(**kw: Any) -> None:
 def pre_llm_call(**kw: Any) -> dict | str | None:
     """YiCeNet context sensing — inject hexagram before every turn.
 
-    检测到 loom-hooks 插件已加载时跳过（LOOM 已处理），
-    避免每轮算两卦。yicenet-hooks 仅用于无 LOOM 的独立部署。
+    Skip when loom-hooks active (LOOM's recommend() already
+    calls YiCeNet internally).
     """
     if _loom_hooks_active():
         logger.debug("loom-hooks active — yicenet-hooks pre_llm_call skipped")
@@ -190,6 +178,88 @@ def pre_llm_call(**kw: Any) -> dict | str | None:
         logger.debug("yicenet predict skipped: %s", e)
 
     return None
+
+
+def pre_tool_call(**kw: Any) -> None:
+    """YiCeNet tool hexagram calibration.
+
+    Run yicenet_predict on tool context for hexagram alignment check.
+    Only triggers on write_file/patch/terminal (code-gen tools).
+    Observe only — never block.
+
+    Skip when loom-hooks active.
+    """
+    if _loom_hooks_active():
+        return
+    yp = _get_yicenet()
+    if not yp:
+        return
+
+    tool_name = kw.get("tool_name", "")
+    args = kw.get("args", {})
+
+    # Only inspect code-generation tools
+    if tool_name not in ("write_file", "patch", "terminal"):
+        return
+
+    # Build brief context for hexagram check
+    brief = f"{tool_name}: "
+    if tool_name == "write_file":
+        brief += args.get("path", "")[:100]
+    elif tool_name == "patch":
+        brief += args.get("path", "")[:100]
+    elif tool_name == "terminal":
+        cmd = args.get("command", "")[:200]
+        brief += cmd
+
+    if not brief.strip():
+        return
+
+    try:
+        hx = yp(brief, temperature=0.1, deterministic=True)
+        logger.debug("yicenet pre_tool: %s → %s", tool_name, str(hx)[:80])
+    except Exception as e:
+        logger.debug("yicenet pre_tool skipped: %s", e)
+
+
+def post_tool_call(**kw: Any) -> None:
+    """YiCeNet tool-level reward signal.
+
+    Send success/failure reward to flywheel buffer.
+    Skip when loom-hooks active (LOOM handles this).
+    """
+    if _loom_hooks_active():
+        return
+
+    tool_name = kw.get("tool_name", "")
+    result = kw.get("result", "")
+    duration_ms = kw.get("duration_ms", 0)
+
+    # Only reward code-gen tools
+    if tool_name not in ("write_file", "patch", "terminal"):
+        return
+
+    # Determine success
+    success = True
+    if isinstance(result, str):
+        try:
+            res = json.loads(result)
+            if isinstance(res, dict) and "error" in res:
+                success = False
+        except (json.JSONDecodeError, TypeError):
+            pass  # non-JSON = terminal output = success
+
+    # Write reward — use session-level context from a minimal sample
+    session_id = kw.get("session_id", "")
+    feedback(
+        session_id=session_id,
+        response_chars=0,
+        input_chars=len(kw.get("args", {}).get("command", kw.get("args", {}).get("path", ""))),
+        n_turns=0,
+        model=kw.get("model", "unknown"),
+        platform=kw.get("platform", ""),
+        success=success,
+    )
 
 
 def post_api_request(**kw: Any) -> None:
@@ -223,7 +293,7 @@ def post_llm_call(**kw: Any) -> None:
 
 
 def on_session_end(**kw: Any) -> None:
-    """Log session end (buffer metadata)."""
+    """Log session end."""
     session_id = kw.get("session_id", "?")
     logger.debug("yicenet session ended: %s", session_id[:12])
 
@@ -235,7 +305,9 @@ def register(ctx) -> None:
     """Register all YiCeNet lifecycle hooks."""
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("post_tool_call", post_tool_call)
     ctx.register_hook("post_api_request", post_api_request)
     ctx.register_hook("post_llm_call", post_llm_call)
     ctx.register_hook("on_session_end", on_session_end)
-    logger.info("yicenet-hooks: registered 5 hooks (3-channel flywheel)")
+    logger.info("yicenet-hooks: registered 7 hooks (4-hook architecture)")

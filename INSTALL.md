@@ -62,21 +62,30 @@ export EVAL_MODEL=qwen2.5-7b-instruct
 export EVAL_API_KEY=not-needed
 ```
 
-### Optional: Hermes Agent Integration
+### Optional: Hermes Agent Plugin Integration (Recommended)
 
-When installed as a Hermes Agent tool:
+For zero-effort setup where YiCeNet runs on **every turn without explicit tool calls**,
+install the Hermes plugin. It wires all 7 hooks as native lifecycle callbacks:
 
-1. Install the package:
 ```bash
-pip install -e /path/to/YiCeNet
+# From the YiCeNet repo
+bash scripts/install/install-yicenet-hooks.sh
 ```
 
-2. Symlink the Hermes tool:
-```bash
-ln -sf /path/to/YiCeNet/src/yicenet/hermes_tool.py ~/.hermes/hermes-agent/tools/yicenet_tool.py
-```
+This replaces the manual symlink approach below. The plugin:
+- Auto-injects hexagram context into every LLM call (pre_llm_call)
+- Calibrates tool direction against hexagram (pre_tool_call, observe only)
+- Sends tool-level reward signals (post_tool_call)
+- Accumulates first-hand token usage data (post_api_request)
+- Writes reward signals to flywheel training buffer (post_llm_call)
+- Works standalone **or** alongside loom-hooks (auto-skip via _loom_hooks_active)
+- Self-suppresses when LOOM is installed — no duplicate predictions
 
-3. Restart Hermes. The `yicenet_predict` and `yicenet_switch` tools appear in the `file` toolset.
+**Requirements:** Hermes Agent, YiCeNet pip-installed (`pip install -e ~/YiCeNet`).
+
+### Legacy: Manual Tool Symlink
+
+If you prefer not to use the plugin, you can manually symlink the tool:
 
 ### Optional: Autonomous Flywheel (Continuous Learning)
 

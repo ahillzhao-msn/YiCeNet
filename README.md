@@ -239,6 +239,8 @@ What it does:
 |------|------|------|--------|
 | `on_session_start` | Session begins | `yicenet_predict` | Establishes hexagram baseline |
 | `pre_llm_call` | Before every response | `yicenet_predict(user_msg)` | Injects hexagram context into prompt |
+| `pre_tool_call` | Before tool execution | Hexagram calibration | Aligns tool direction with hexagram (observe only) |
+| `post_tool_call` | After tool execution | Tool-level reward signal | Success/failure reward to flywheel |
 | `post_api_request` | After every API call | Accumulates token usage | First-hand cost data for reward |
 | `post_llm_call` | After every response | `feedback(reward_signal)` | Writes to flywheel training buffer |
 | `on_session_end` | Session ends | Logs metadata | Session wrap-up |
