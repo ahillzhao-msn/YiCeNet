@@ -573,6 +573,11 @@ def _register_ready(version: str, checkpoint_path: str):
         with open(REGISTRY_PATH) as f:
             reg = json.load(f)
 
+    # 保存旧 ready 到 history (保留真实 metrics)
+    old_ready = reg.get("ready")
+    if old_ready:
+        reg.setdefault("history", []).append(dict(old_ready))
+
     reg["ready"] = {
         "version": version,
         "path": os.path.relpath(checkpoint_path, str(CHECKPOINT_DIR)),
@@ -581,7 +586,6 @@ def _register_ready(version: str, checkpoint_path: str):
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "notes": f"Flywheel v5 auto-train {time.strftime('%Y-%m-%d')}",
     }
-    reg["history"].append(reg["ready"])
 
     with open(REGISTRY_PATH, "w") as f:
         json.dump(reg, f, indent=2)
