@@ -26,10 +26,15 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 # ── Real Qwen BPE tokenizer ──
 from .tokenizer import encode as yicenet_encode, build_vocab
 from .config import yicenet_data_dir
+
+# Cross-attention MemoryBank (Phase 1)
+from .memory_bank import get_memory_bank
+from .cross_attention import CrossAttention, ContextPrescription
 
 # Check if vocab exists, build if not
 _VOCAB_CHECKED = False
@@ -181,6 +186,10 @@ class YiCeNetEngine:
         text: str,
         temperature: float = 0.1,
         deterministic: bool = False,
+        return_prescription: bool = False,
+        session_id: str = "",
+        turn_id: int = 0,
+        turn_summary: str = "",
     ) -> dict:
         """
         Run full inference: encode → divine → evaluate → act.
@@ -192,6 +201,13 @@ class YiCeNetEngine:
                            Purely argmax over hexagram logits.
                            Use this for rigid/fixed workflows where
                            exploration must not interfere.
+            return_prescription: If True, also run cross-attention against
+                                 historical turns and return context_prescription.
+                                 Requires session_id. Backward compatible —
+                                 default False preserves existing behavior.
+            session_id: LOOM session identifier (required for prescription)
+            turn_id: Sequential turn number within session
+            turn_summary: Optional short text summary of this turn
 
         Returns:
             dict with keys:
@@ -199,6 +215,9 @@ class YiCeNetEngine:
                 best_candidate, selected_hexagram_id, selected_hexagram_name,
                 candidates[{index, hexagram_id, hexagram_name, q_value}],
                 action_id, action_name, q_values, temperature, deterministic
+                context_prescription (optional, when return_prescription=True):
+                    {mode, retain_turns, summarize_turns, discard_turns,
+                     attention_entropy, compression_ratio, key_insight}
         """
         self._lazy_load()
         _ensure_vocab()
@@ -285,11 +304,11 @@ class YiCeNetEngine:
 
         candidates = []
         for i in range(8):
-            h = cand_idxs_list[i]
+            cid = cand_idxs_list[i]
             candidates.append({
                 "index": i,
-                "hexagram_id": h,
-                "hexagram_name": HEXAGRAM_NAMES[h] if h < 64 else "???",
+                "hexagram_id": cid,
+                "hexagram_name": HEXAGRAM_NAMES[cid] if cid < 64 else "???",
                 "q_value": round(cand_values_list[i], 4),
             })
 
@@ -298,7 +317,8 @@ class YiCeNetEngine:
             pattern_lines.append("—" if (hex_id >> i) & 1 else "- -")
         pattern = "\n".join(pattern_lines)
 
-        return {
+        # ── Build result ──
+        result = {
             "hexagram_id": hex_id,
             "hexagram_name": HEXAGRAM_NAMES[hex_id] if hex_id < 64 else "???",
             "hexagram_number": hex_id + 1,
@@ -320,6 +340,52 @@ class YiCeNetEngine:
             "deterministic": deterministic,
             "probes": probe_list,
         }
+
+        # ── Cross-attention prescription (Phase 1) ──
+        if return_prescription and session_id:
+            encoder_np = h.squeeze(0).cpu().numpy().astype(np.float32)
+            encoder_np = encoder_np / (np.linalg.norm(encoder_np) + 1e-10)
+
+            bank = get_memory_bank()
+            bank.init_session(session_id)
+
+            # Store this turn's encoder output
+            bank.store_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                encoder_output=encoder_np,
+                hexagram_id=hex_id,
+                summary=turn_summary,
+            )
+
+            # Run cross-attention against historical turns
+            keys, meta = bank.get_session_keys(session_id)
+            if keys.shape[0] <= 1:
+                # First turn: no history, inject empty prescription (full mode)
+                result["context_prescription"] = {
+                    "mode": "full",
+                    "retain_turns": [turn_id] if keys.shape[0] > 0 else [],
+                    "summarize_turns": [],
+                    "discard_turns": [],
+                    "attention_entropy": 0.0,
+                    "compression_ratio": 0.0,
+                    "key_insight": "首輪 — 無歷史可參考",
+                }
+            else:
+                # Use the stored encoder as query (from keys, which was just appended)
+                query = encoder_np
+                # Run attention against all EXCEPT the current turn
+                past_keys = keys[:-1]
+                past_meta = meta[:-1]
+
+                attn = CrossAttention()
+                weights = attn.compute(query, past_keys)
+
+                rx = ContextPrescription(weights, past_meta, n_turns_total=keys.shape[0])
+                prescription = rx.generate()
+                result["context_prescription"] = prescription.to_dict()
+
+        return result
 
     def predict_structured(self, text: str, temperature: float = 0.1,
                            deterministic: bool = False) -> str:
@@ -345,6 +411,97 @@ class YiCeNetEngine:
         )
         lines.append(f"└────────────────────────────────────────┘")
         return "\n".join(lines)
+
+    def attend(
+        self,
+        text: str,
+        session_id: str,
+        turn_id: int = 0,
+        turn_summary: str = "",
+        embedding: Optional[np.ndarray] = None,
+    ) -> dict:
+        """Lightweight encode + store + cross-attention. No hexagram overhead.
+        
+        ~3ms with TinyEncoder; ~2ms with external bge-small embedding.
+        Pure MemoryBank storage + cross-attention for context prescription.
+        
+        The embedding source is configurable:
+        - None (default): uses TinyEncoder (backward compatible, for hexagram)
+        - external np.ndarray(384,): uses provided embedding (for semantic similarity)
+        
+        Recommended: pass bge-small embedding from LOOM for semantic attention.
+        
+        Args:
+            text: User input text (for fallback encoder)
+            session_id: LOOM session identifier
+            turn_id: Sequential turn number
+            turn_summary: Optional short summary for prescription visualization
+            embedding: Optional pre-computed 384d embedding vector.
+                       When provided, skips TinyEncoder encoding.
+            
+        Returns:
+            dict with context_prescription key (always present)
+        """
+        if embedding is not None:
+            # External embedding provided — skip TinyEncoder
+            encoder_np = embedding.astype(np.float32)
+            encoder_np = encoder_np / (np.linalg.norm(encoder_np) + 1e-10)
+        else:
+            # Fallback: use TinyEncoder (backward compatible)
+            self._lazy_load()
+            _ensure_vocab()
+            
+            config = self._config
+            device = next(self._model.parameters()).device
+            
+            input_ids, attention_mask = yicenet_encode(
+                text, max_len=config.max_seq_len
+            )
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            
+            with torch.no_grad():
+                h = self._model.encode_context(input_ids, attention_mask)
+            
+            encoder_np = h.squeeze(0).cpu().numpy().astype(np.float32)
+            encoder_np = encoder_np / (np.linalg.norm(encoder_np) + 1e-10)
+        
+        bank = get_memory_bank()
+        bank.init_session(session_id)
+        
+        # Store this turn's encoder output (no hexagram_id — not computed)
+        bank.store_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            encoder_output=encoder_np,
+            hexagram_id=-1,
+            summary=turn_summary,
+        )
+        
+        # Run cross-attention
+        keys, meta = bank.get_session_keys(session_id)
+        if keys.shape[0] <= 1:
+            prescription = {
+                "mode": "full",
+                "retain_turns": [turn_id] if keys.shape[0] > 0 else [],
+                "summarize_turns": [],
+                "discard_turns": [],
+                "attention_entropy": 0.0,
+                "compression_ratio": 0.0,
+                "key_insight": "首輪 — 無歷史可參考",
+            }
+        else:
+            query = encoder_np
+            past_keys = keys[:-1]
+            past_meta = meta[:-1]
+            
+            attn = CrossAttention()
+            weights = attn.compute(query, past_keys)
+            
+            rx = ContextPrescription(weights, past_meta, n_turns_total=keys.shape[0])
+            prescription = rx.generate().to_dict()
+        
+        return {"context_prescription": prescription}
 
     def switch_model(self, checkpoint_path: str) -> bool:
         """Hot-switch to a different checkpoint."""

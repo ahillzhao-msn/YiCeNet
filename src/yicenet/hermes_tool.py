@@ -105,7 +105,11 @@ def _check_registry_switch():
 
 
 def yicenet_predict(task_brief: str, temperature: float = 0.1,
-                    deterministic: bool = False) -> str:
+                    deterministic: bool = False,
+                    return_prescription: bool = False,
+                    session_id: str = "",
+                    turn_id: int = 0,
+                    turn_summary: str = "") -> str:
     """
     Predict orchestration skeleton for a task description.
 
@@ -114,12 +118,22 @@ def yicenet_predict(task_brief: str, temperature: float = 0.1,
 
     When deterministic=True, bypasses Gumbel exploration noise for
     rigid/fixed workflows. The model outputs pure argmax.
+
+    When return_prescription=True, also runs cross-attention against
+    historical turns in the same session. Requires session_id.
+    Default False preserves existing behavior.
     """
     try:
         # Check if registry.json active changed since last call
         _check_registry_switch()
         engine = _get_engine()
-        result = engine.predict(task_brief, temperature, deterministic)
+        result = engine.predict(
+            task_brief, temperature, deterministic,
+            return_prescription=return_prescription,
+            session_id=session_id,
+            turn_id=turn_id,
+            turn_summary=turn_summary,
+        )
         # Log to metrics DB
         try:
             from yicenet.metrics import MetricsLogger
