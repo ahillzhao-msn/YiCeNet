@@ -1,12 +1,30 @@
 [build-system]
-requires = ["setuptools>=64.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "15.1.0"
-description = "I-Ching inspired tiny neural network for conversational navigation"
+version = "15.2.0"
+description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+keywords = ["iching", "hexagram", "orchestration", "neural-network", "yicenet"]
+
+authors = [
+    {name = "YiCeNet Contributors"},
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 dependencies = [
     "torch>=2.0.0",
     "numpy>=1.24",
@@ -17,19 +35,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["yicenet*"]
-exclude = ["src"]
-
-[tool.setuptools.package-data]
-"*" = ["*.json", "*.txt"]
+[project.urls]
+Source = "https://github.com/ahillzhao-msn/YiCeNet"
+Documentation = "https://github.com/ahillzhao-msn/YiCeNet#readme"
 
 [project.scripts]
 yicenet-bootstrap = "yicenet.bootstrap:main"
-yicenet-flywheel = "yicenet.flywheel:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yicenet"]
+exclude = ["**/__pycache__/**", "**/*.pt", "**/*.pth"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["checkpoints/**", "data/**", ".venv/**", ".git/**"]
+
+[tool.hatch.build]
+dev-mode-dirs = ["src"]
+
+[dependency-groups]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
