@@ -1,0 +1,69 @@
+# YiCeNet — Build wheel + publish to GitHub Release
+# Triggered by pushing a tag v*.*.* or manually via workflow_dispatch.
+# Model checkpoints are bundled as separate release assets (not in wheel).
+
+name: build-release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v15.2.0)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build wheel + attach checkpoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Build wheel
+        run: uv build
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      # ── Upload wheel ──
+      - name: Upload wheel to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  upload-checkpoints:
+    name: Upload model checkpoints
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: List checkpoints
+        run: ls -la checkpoints/ && echo "---" && cat checkpoints/registry.json
+
+      - name: Upload checkpoints to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            checkpoints/yicenet_v15.pt
+            checkpoints/yicenet_v18.pt
+            checkpoints/world_model_best.pt
+            checkpoints/registry.json
+          fail_on_unmatched_files: false
