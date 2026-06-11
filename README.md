@@ -120,17 +120,26 @@ The external API is non-fatal — YiCeNet not installed? `submit_trajectory()` s
 git clone https://github.com/ahillzhao-msn/YiCeNet.git
 cd YiCeNet
 
+# Download checkpoints from GitHub Releases
+# See https://github.com/ahillzhao-msn/YiCeNet/releases/tag/v18.0.0
+mkdir -p checkpoints
+# Download these files from the release Assets into checkpoints/:
+#   - yicenet_v15.pt   (base/seed model)
+#   - minimal.pt       (minimal inference checkpoint)
+#   - world_model_best.pt
+#   - registry.json
+
 # Editable install
 pip install -e .
 
-# Verify
+# Verify import
 python3 -c "import yicenet; print(yicenet.__version__)"
 
 # Quick inference
 python3 -c "
 from yicenet import YiCeNetEngine
 engine = YiCeNetEngine()
-print(engine.predict_structured('search knowledge base'))
+print(engine.predict('search knowledge base'))
 "
 ```
 

@@ -32,26 +32,61 @@ else
 fi
 echo "✓ YiCeNet at: $YICENET_PATH"
 
-# ── 2. Create plugin directory ──
+# ── 2. Download checkpoints (if missing) ──
+CKPT_DIR="$YICENET_PATH/checkpoints"
+REQUIRED_FILES=("yicenet_v15.pt" "world_model_best.pt" "registry.json")
+MISSING=0
+for f in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$CKPT_DIR/$f" ]; then
+        MISSING=1
+        break
+    fi
+done
+
+if [ "$MISSING" -eq 1 ]; then
+    echo "⚠ Checkpoints incomplete. Required: ${REQUIRED_FILES[*]}"
+    echo "  Release: https://github.com/ahillzhao-msn/YiCeNet/releases/tag/v18.0.0"
+    echo ""
+    read -r -p "  Auto-download from GitHub releases? [y/N] " REPLY
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        mkdir -p "$CKPT_DIR"
+        RELEASE_URL="https://github.com/ahillzhao-msn/YiCeNet/releases/download/v18.0.0"
+        for f in yicenet_v15.pt minimal.pt world_model_best.pt registry.json; do
+            echo "    Downloading $f..."
+            curl -sL "$RELEASE_URL/$f" -o "$CKPT_DIR/$f" &
+        done
+        wait
+        echo "  ✓ Checkpoints downloaded to $CKPT_DIR"
+    else
+        echo "  ⚠ Skipping. Download manually from the release URL above."
+        echo "    YiCeNetEngine will fail until checkpoints are in place."
+    fi
+else
+    echo "✓ Checkpoints found"
+fi
+
+# ── 3. Create plugin directory ──
 mkdir -p "$PLUGIN_DIR"
 echo "✓ Plugin dir: $PLUGIN_DIR"
 
-# ── 3. Write plugin.yaml ──
+# ── 4. Write plugin.yaml ──
 cp "$SCRIPT_DIR/plugin.yaml" "$PLUGIN_DIR/plugin.yaml" 2>/dev/null || cat > "$PLUGIN_DIR/plugin.yaml" << 'YAML'
 name: yicenet-hooks
-version: 1.0.0
+version: 2.0.0
 description: "YiCeNet lifecycle hooks: predict + feedback as native Hermes hooks. 3-channel flywheel."
 author: Hermes Agent
 hooks:
   - on_session_start
   - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
   - post_api_request
   - post_llm_call
   - on_session_end
 YAML
 echo "✓ plugin.yaml"
 
-# ── 4. Write __init__.py ──
+# ── 5. Write __init__.py ──
 cp "$SCRIPT_DIR/__init__.py" "$PLUGIN_DIR/__init__.py" 2>/dev/null || {
     echo "⚠ __init__.py not found alongside this script."
     echo "  Expected at: $SCRIPT_DIR/__init__.py"
@@ -60,17 +95,16 @@ cp "$SCRIPT_DIR/__init__.py" "$PLUGIN_DIR/__init__.py" 2>/dev/null || {
 }
 echo "✓ __init__.py"
 
-# ── 5. Symlink Hermes tool (so yicenet_predict is available) ──
-TOOL_LINK="$HERMES_HOME/hermes-agent/tools/yicenet_tool.py"
-TOOL_SRC="$YICENET_PATH/src/yicenet/hermes_tool.py"
-if [ ! -L "$TOOL_LINK" ]; then
-    ln -sf "$TOOL_SRC" "$TOOL_LINK"
-    echo "✓ Symlinked yicenet_tool.py → hermes-agent/tools/"
-else
-    echo "  yicenet_tool.py already linked"
-fi
+# ── 6. Install Python package (ensure yicenet is importable) ──
+echo ""
+echo "── Installing Python package ──"
+pip install -e "$YICENET_PATH" 2>/dev/null || pip3 install -e "$YICENET_PATH" 2>/dev/null || {
+    echo "⚠ pip install failed. Make sure yicenet is on PYTHONPATH:"
+    echo "  export PYTHONPATH=\$YICENET_PATH/src:\$PYTHONPATH"
+}
+echo "✓ Python package installed"
 
-# ── 6. Enable plugin ──
+# ── 7. Enable plugin ──
 echo ""
 echo "── Enabling plugin ──"
 if command -v hermes &>/dev/null; then
@@ -96,7 +130,7 @@ else
     echo "    enabled: [$PLUGIN_NAME]"
 fi
 
-# ── 7. Verify ──
+# ── 8. Verify ──
 echo ""
 echo "── Verification ──"
 ls -la "$PLUGIN_DIR/"
@@ -106,13 +140,18 @@ grep -A 2 "enabled:" "$HERMES_HOME/config.yaml" 2>/dev/null | head -5
 echo ""
 
 # Import test
-"$HERMES_HOME/hermes-agent/venv/bin/python3" -c "
+python3 -c "
 import sys
 sys.path.insert(0, '$HOME/YiCeNet/src')
 from yicenet.hermes_tool import yicenet_predict, yicenet_switch
 print('✓ yicenet_predict importable')
 print('✓ yicenet_switch importable')
-print('Plugin ready for next Hermes session.')
+" 2>&1 || python -c "
+import sys
+sys.path.insert(0, '$HOME/YiCeNet/src')
+from yicenet.hermes_tool import yicenet_predict, yicenet_switch
+print('✓ yicenet_predict importable')
+print('✓ yicenet_switch importable')
 " 2>&1
 
 echo ""
