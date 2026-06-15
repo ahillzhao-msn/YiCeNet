@@ -142,6 +142,17 @@ class MemoryBank:
         """Number of turns stored for a session."""
         buf = self._sessions.get(session_id)
         return len(buf.turns) if buf else 0
+
+    def get_hexagram_history(self, session_id: str) -> list[int]:
+        """Return ordered list of hexagram IDs for this session (oldest first).
+
+        Excludes turns where hexagram_id < 0 (attend() calls without routing).
+        Used by the engine to compute hexagram chain dynamics for env_vec.
+        """
+        buf = self._sessions.get(session_id)
+        if buf is None:
+            return []
+        return [t.hexagram_id for t in buf.turns if t.hexagram_id >= 0]
     
     def flush_session(self, session_id: str) -> list[TurnRecord]:
         """Clear session buffer and return the records (for optional solidify).

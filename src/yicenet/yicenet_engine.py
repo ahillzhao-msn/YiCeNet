@@ -101,6 +101,12 @@ class YiCeNetEngine:
         self._checkpoint = checkpoint
         self._config = None
 
+        # Per-session env signal cache: stores signals computed from the
+        # PREVIOUS turn that are useful for conditioning the CURRENT turn.
+        # Currently tracks attention_entropy from CrossAttention.
+        # Dict[session_id, Dict[signal_name, value]]
+        self._session_env_cache: dict[str, dict] = {}
+
         # Resolve paths: YICENET_HOME env var > explicit > auto-detect
         if not project_root:
             from .config import yicenet_home
@@ -181,6 +187,78 @@ class YiCeNetEngine:
         _mem = torch.cuda.memory_allocated() / 1024 / 1024 if torch.cuda.is_available() else 0
         print(f"[YiCeNet] Loaded {ckpt} on {_device_used} ({_mem:.0f}MB)")
 
+    # ── Hexagram chain signal computation ─────────────────────────────────
+
+    def _compute_chain_signals(self, session_id: str) -> dict:
+        """Compute hexagram chain dynamics + cached env signals for this session.
+
+        Queries the global MemoryBank for the hexagram sequence and derives
+        structural chain signals (stability, velocity, clan diversity, entropy).
+        Also merges `_session_env_cache[session_id]` which holds signals from
+        the previous turn (currently: attention_entropy from CrossAttention).
+
+        Returns an empty dict when there is no history or session_id is empty.
+        Caller-supplied values in environment always override auto-computed ones.
+        """
+        if not session_id:
+            return {}
+
+        import math as _math
+        from collections import Counter
+
+        bank = get_memory_bank()
+        history = bank.get_hexagram_history(session_id)
+        depth = bank.get_turn_count(session_id)
+
+        result: dict = {"memory_bank_depth": depth}
+
+        # Include cached signals from the PREVIOUS turn (e.g. attention_entropy)
+        cached = self._session_env_cache.get(session_id, {})
+        result.update(cached)
+
+        if not history:
+            return result
+
+        # ── Hexagram stability: consecutive same hexagram at tail ──────────
+        last_hx = history[-1]
+        stability = 1
+        for hx in reversed(history[:-1]):
+            if hx == last_hx:
+                stability += 1
+            else:
+                break
+        result["hexagram_stability"] = stability  # raw int; build_env_vec /20
+
+        # ── Hexagram velocity: EMA of |jump| between successive hexagrams ──
+        if len(history) >= 2:
+            jumps = [abs(history[i] - history[i - 1]) for i in range(1, len(history))]
+            ema = float(jumps[0])
+            alpha = 0.3
+            for j in jumps[1:]:
+                ema = (1 - alpha) * ema + alpha * float(j)
+            result["hexagram_velocity"] = ema / 63.0  # normalized
+        else:
+            result["hexagram_velocity"] = 0.0
+
+        # ── Clan diversity: fraction of 8 trigram clans visited (last 20) ──
+        recent = history[-20:]
+        clans_visited = len({hx // 8 for hx in recent})
+        result["clan_diversity"] = clans_visited / 8.0
+
+        # ── Hexagram entropy: Shannon entropy of recent hex distribution ───
+        counts = Counter(recent)
+        n = len(recent)
+        if n > 1:
+            entropy = -sum((c / n) * _math.log(c / n) for c in counts.values())
+            max_e = _math.log(min(n, 64))
+            result["hexagram_entropy"] = entropy / max_e if max_e > 0 else 0.0
+        else:
+            result["hexagram_entropy"] = 0.0
+
+        return result
+
+    # ──────────────────────────────────────────────────────────────────────
+
     def predict(
         self,
         text: str,
@@ -234,6 +312,14 @@ class YiCeNetEngine:
         )
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
+
+        # Auto-compute hexagram chain signals from MemoryBank when session_id
+        # is provided.  Caller-supplied values take precedence (merge order:
+        # chain_signals first, then caller's environment overrides).
+        if session_id:
+            chain = self._compute_chain_signals(session_id)
+            if chain:
+                environment = {**chain, **(environment or {})}
 
         # Build env vector once; None → no-op inside encode_context
         env_vec = build_env_vec(environment)
@@ -401,7 +487,12 @@ class YiCeNetEngine:
 
                 rx = ContextPrescription(weights, past_meta, n_turns_total=keys.shape[0])
                 prescription = rx.generate()
-                result["context_prescription"] = prescription.to_dict()
+                pdict = prescription.to_dict()
+                result["context_prescription"] = pdict
+
+                # Cache attention_entropy for use in the NEXT turn's env_vec
+                attn_e = pdict.get("attention_entropy", 0.0)
+                self._session_env_cache.setdefault(session_id, {})["attention_entropy"] = float(attn_e)
 
         return result
 
@@ -516,10 +607,14 @@ class YiCeNetEngine:
             
             attn = CrossAttention()
             weights = attn.compute(query, past_keys)
-            
+
             rx = ContextPrescription(weights, past_meta, n_turns_total=keys.shape[0])
             prescription = rx.generate().to_dict()
-        
+
+            # Cache attention_entropy for the NEXT turn's env_vec
+            attn_e = prescription.get("attention_entropy", 0.0)
+            self._session_env_cache.setdefault(session_id, {})["attention_entropy"] = float(attn_e)
+
         return {"context_prescription": prescription}
 
     def switch_model(self, checkpoint_path: str) -> bool:

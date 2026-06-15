@@ -124,15 +124,22 @@ def yicenet_predict(
     deterministic=True bypasses Gumbel exploration noise — use for rigid workflows
     where reproducibility matters more than exploration.
 
-    environment: optional structural signals that sharpen hexagram routing.
-        Allowed keys (all optional, unknown keys ignored):
-          hour_of_day (int 0-23)       — time-of-day signal
-          session_turn (int)           — how many turns into this session
-          last_hexagram_id (int 0-63)  — hexagram from the previous predict call
-          correction_rate (float 0-1)  — fraction of recent turns that were corrected
-          satisfaction_ema (float 0-1) — smoothed satisfaction score
-          attention_entropy (float)    — MemoryBank focus level
-          last_tool_success (bool)     — whether the last tool call succeeded
+    environment: optional structural signals (16-dim) that sharpen hexagram routing.
+        All keys are optional; unknown keys are silently ignored.
+        The engine auto-computes hexagram chain signals when session_id is set:
+          memory_bank_depth, hexagram_stability, hexagram_velocity,
+          clan_diversity, hexagram_entropy, attention_entropy (from previous turn).
+
+        Caller-supplied keys (override auto-computed where overlap):
+          hour_of_day (int 0-23)         — time-of-day
+          day_of_week (int 0-6)          — Mon=0 … Sun=6
+          session_turn (int)             — conversation depth
+          last_hexagram_id (int 0-63)    — previous hexagram ID
+          correction_rate (float 0-1)    — recent correction fraction
+          completed_rate (float 0-1)     — recent completion fraction
+          praised_rate (float 0-1)       — recent praise fraction
+          satisfaction_ema (float 0-1)   — smoothed satisfaction
+          last_tool_success (bool)       — last tool call outcome (overrides satisfaction slot)
 
     Returns (in addition to standard hexagram fields):
         env_confidence (float 0-1): how certain the router is given current context
