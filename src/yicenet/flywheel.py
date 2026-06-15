@@ -2,29 +2,32 @@
 YiCeNet v5 Online Flywheel — continuous learning with power-law decay.
 
 Pipeline:
-  1. Scan Hermes session DB for new user messages since last check
-  2. Extract external vectors (token_cost, response_length, satisfaction)
-  3. Append to buffer with timestamps for power-law weighting
-  4. Incrementally update World Model v2 (dual-head, weighted by power-law)
-  5. RL fine-tune v5 (64-dim projection reward)
-  6. Register new checkpoint as 'ready' in registry.json for A/B switch
+  1. Collect new samples from all registered DataSources (platform-agnostic)
+  2. Append to ~/.yicenet/data/flywheel_buffer.jsonl with timestamps
+  3. Incrementally update World Model v2 (dual-head, power-law weighted)
+  4. RL fine-tune v5 (64-dim projection reward)
+  5. Register new checkpoint as 'ready' in registry.json for A/B switch
+
+DataSources registered by default_sources():
+  HermesDataSource      — Hermes state.db (only when available)
+  ClaudeCodeDataSource  — ~/.claude/projects/**/*.jsonl (only when available)
+  FlywheelBufferSource  — ~/.yicenet/data/flywheel_buffer.jsonl (always)
 """
 
 import json
 import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
-# ── Paths (dual-mode: YICENET_HOME env var > auto-detect) ──
+# ── Paths ──
 from yicenet.config import yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
 
 YICENET_ROOT = yicenet_home()
 CHECKPOINT_DIR = yicenet_checkpoint_dir()
 REGISTRY_PATH = CHECKPOINT_DIR / "registry.json"
-STATE_FILE = Path.home() / ".hermes" / "data" / "yicenet_flywheel.json"
-DB_PATH = str(Path.home() / ".hermes" / "state.db")
+STATE_FILE = yicenet_home() / "state.json"
 
 # ── Power law parameters (match config.py defaults) ──
 WM_SLOW_TAU_DAYS = 30.0
@@ -112,6 +115,99 @@ def _consume_external_buffer(buffer_path: Path) -> int:
     return count
 
 
+def default_sources():
+    """Return the platform-adaptive list of DataSources for this machine.
+
+    Each source is only included when its underlying store exists:
+      - HermesDataSource      if ~/.hermes/state.db is present
+      - ClaudeCodeDataSource  if ~/.claude/projects/ exists
+      - FlywheelBufferSource  always (creates the file on first write)
+
+    The flywheel calls scan_since() on each source and merges the results,
+    so adding a new IDE later requires only adding its DataSource here.
+    """
+    from yicenet.datasource.hermes import HermesDataSource
+    from yicenet.datasource.claude_code import ClaudeCodeDataSource
+    from yicenet.datasource.buffer import FlywheelBufferSource
+
+    sources = []
+    h = HermesDataSource()
+    if h.is_available():
+        sources.append(h)
+    c = ClaudeCodeDataSource()
+    if c.is_available():
+        sources.append(c)
+    sources.append(FlywheelBufferSource())  # always — universal drop-zone
+    return sources
+
+
+def scan_all_sources(state: dict, sources=None) -> list[dict]:
+    """Collect new samples from all DataSources and normalise to buffer schema.
+
+    Replaces the Hermes-only scan_new_messages(); called by flywheel_run().
+    `state` must contain 'last_run' (Unix timestamp float or None).
+    """
+    since = float(state.get("last_run") or 0.0)
+    if sources is None:
+        sources = default_sources()
+
+    buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
+    buffer_path.parent.mkdir(parents=True, exist_ok=True)
+
+    all_samples: list[dict] = []
+    for src in sources:
+        try:
+            raw_samples = src.scan_since(since)
+        except Exception:
+            continue
+
+        # FlywheelBufferSource samples are already on disk — never re-write them.
+        # All other sources (Hermes, Claude Code, …) get appended to the buffer.
+        should_write = src.source_id != "buffer"
+        if should_write:
+            wf = open(buffer_path, "a", encoding="utf-8")
+        try:
+            for s in raw_samples:
+                rec = {
+                    "user_text": s.user_text,
+                    "producer": s.source,
+                    "conversation_id": s.conversation_id,
+                    "timestamp": s.timestamp or time.time(),
+                    "token_cost": s.token_cost,
+                    "satisfaction": s.satisfaction,
+                    "continued": s.continued,
+                    "corrected": s.corrected,
+                    "completed": s.completed,
+                    "praised": s.praised,
+                    "abandoned": s.abandoned,
+                    "token_efficiency": s.response_length,
+                    "source_msg_id": s.source_msg_id,
+                }
+                if s.embedding:
+                    rec["embedding"] = s.embedding
+                if should_write:
+                    wf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                all_samples.append(rec)
+        finally:
+            if should_write:
+                wf.close()
+
+    return all_samples
+
+
+def scan_new_messages(state: dict) -> list[dict]:
+    """Deprecated: use scan_all_sources() instead.
+
+    Delegates to scan_all_sources() with only the Hermes source for callers
+    that have not yet been updated.
+    """
+    from yicenet.datasource.hermes import HermesDataSource
+    h = HermesDataSource()
+    if not h.is_available():
+        return []
+    return scan_all_sources(state, sources=[h])
+
+
 def load_state() -> dict:
     """Load flywheel state."""
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -132,92 +228,6 @@ def save_state(state: dict):
         json.dump(state, f, indent=2)
 
 
-def scan_new_messages(state: dict) -> list[dict]:
-    """
-    Scan Hermes session DB for new user messages since last check.
-
-    Returns list of {
-        user_text, assistant_text, next_user_text,
-        timestamp, satisfaction, token_cost, response_length,
-        session_id, msg_id, continued, corrected, completed, praised, abandoned
-    }
-    """
-    last_id = state.get("last_message_id", 0)
-    conn = sqlite3.connect(DB_PATH)
-
-    rows = conn.execute("""
-        SELECT m1.id, m1.content, m1.session_id, m1.timestamp,
-               m2.content as asst_content,
-               (SELECT content FROM messages m3
-                WHERE m3.session_id = m1.session_id
-                  AND m3.role = 'user'
-                  AND m3.timestamp > m2.timestamp
-                ORDER BY m3.timestamp LIMIT 1) as next_user_text
-        FROM messages m1
-        JOIN messages m2 ON m2.session_id = m1.session_id
-            AND m2.role = 'assistant'
-            AND m2.timestamp > m1.timestamp
-            AND m2.timestamp = (
-                SELECT MIN(timestamp) FROM messages
-                WHERE session_id = m1.session_id
-                  AND role = 'assistant'
-                  AND timestamp > m1.timestamp
-            )
-        WHERE m1.role = 'user'
-          AND m1.id > ?
-          AND m1.content IS NOT NULL
-          AND length(m1.content) > 3
-        ORDER BY m1.id
-        LIMIT 100
-    """, (last_id,)).fetchall()
-
-    conn.close()
-
-    from yicenet.external_metrics import (
-        compute_satisfaction,
-        estimate_token_cost,
-        estimate_response_length,
-    )
-
-    samples = []
-    for msg_id, content, session_id, ts, asst_text, next_text in rows:
-        # Multi-level satisfaction
-        satisfaction = compute_satisfaction(next_text, content)
-        token_cost = estimate_token_cost(asst_text or content)
-        response_len = estimate_response_length(next_text or "")
-
-        # Boolean signals for hexagram projection
-        from yicenet.external_metrics import (
-            _check_patterns, _CORRECTION_PATTERNS, _COMPLETION_PATTERNS,
-            _PRAISE_PATTERNS, _ABANDON_PATTERNS,
-        )
-        next_str = next_text or ""
-        corrected = _check_patterns(next_str, _CORRECTION_PATTERNS)
-        completed = _check_patterns(next_str, _COMPLETION_PATTERNS)
-        praised = _check_patterns(next_str, _PRAISE_PATTERNS)
-        abandoned = _check_patterns(next_str, _ABANDON_PATTERNS) or next_text is None
-        continued = next_text is not None and not abandoned
-
-        samples.append({
-            "msg_id": msg_id,
-            "user_text": content,
-            "assistant_text": asst_text or "",
-            "next_user_text": next_text or "",
-            "session_id": session_id,
-            "timestamp": ts,
-            "satisfaction": satisfaction,
-            "token_cost": token_cost,
-            "response_length": response_len,
-            "continued": continued,
-            "corrected": corrected,
-            "completed": completed,
-            "praised": praised,
-            "abandoned": abandoned,
-        })
-
-    return samples
-
-
 def flywheel_run():
     """Execute one flywheel cycle (v5)."""
     print("=" * 60)
@@ -225,20 +235,22 @@ def flywheel_run():
     print("=" * 60)
 
     state = load_state()
-    print(f"  Last message ID: {state['last_message_id']}")
     print(f"  Total samples processed: {state['total_samples']}")
     print(f"  Next version: v{state['version_counter']}")
 
-    # ── Step 0: Consume external producer buffer ──
+    # ── Step 0: Flush in-memory producer buffer to disk ──
     buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
     ext_count = _consume_external_buffer(buffer_path)
     if ext_count:
-        print(f"    Consumed {ext_count} external trajectories")
+        print(f"    Consumed {ext_count} external trajectories from submit_trajectory()")
 
-    # ── Step 1: Scan new data ──
-    print("\n  Step 1: Scanning for new messages...")
-    new_samples = scan_new_messages(state)
-    print(f"    Found {len(new_samples)} new samples")
+    # ── Step 1: Scan all DataSources for new samples ──
+    # scan_all_sources() writes Hermes / Claude Code samples to buffer_path;
+    # FlywheelBufferSource samples are already in the file and are NOT re-written.
+    print("\n  Step 1: Scanning all DataSources...")
+    new_samples = scan_all_sources(state)
+    new_count = len(new_samples)
+    print(f"    Found {new_count} new samples across all sources")
 
     if not new_samples:
         print("    No new data. Skipping.")
@@ -246,27 +258,16 @@ def flywheel_run():
         save_state(state)
         return
 
-    # ── Step 2: Append to training buffer ──
-    print("\n  Step 2: Appending to training buffer...")
-    os.makedirs(os.path.dirname(buffer_path), exist_ok=True)
-
-    new_count = 0
-    with open(buffer_path, "a") as f:
-        for s in new_samples:
-            f.write(json.dumps(s) + "\n")
-            new_count += 1
-
+    # Count current buffer size (scan_all_sources already wrote to it)
     total_buffer = 0
     if buffer_path.exists():
-        with open(buffer_path) as f:
+        with open(buffer_path, encoding="utf-8") as f:
             total_buffer = sum(1 for _ in f)
-
-    print(f"    Appended {new_count} samples (buffer now {total_buffer})")
+    print(f"    Buffer now holds {total_buffer} total samples")
 
     # Need minimum 20 samples to bother training
     if total_buffer < 20:
         print(f"    Buffer too small ({total_buffer} < 20). Deferring training.")
-        state["last_message_id"] = max(s["msg_id"] for s in new_samples)
         state["total_samples"] += new_count
         state["last_run"] = time.time()
         state["runs"].append({
@@ -298,7 +299,6 @@ def flywheel_run():
     _auto_promote(buffer_path)
 
     # ── Update state ──
-    state["last_message_id"] = max(s["msg_id"] for s in new_samples)
     state["total_samples"] += new_count
     state["version_counter"] += 1
     state["last_run"] = time.time()

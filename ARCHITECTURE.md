@@ -1,6 +1,6 @@
 # YiCeNet Architecture
 
-> Version 15.1.0 · 5.6M parameters · 4ms inference
+> Version 15.3.0 · 5.6M parameters · 4ms inference
 
 ---
 
@@ -14,6 +14,7 @@
 6. [Config & Portability](#6-config--portability)
 7. [Testing](#7-testing)
 8. [Reward Signal Architecture](#8-reward-signal-architecture)
+9. [Environment Awareness (v15.3.0)](#9-environment-awareness-v1530)
 
 ---
 
@@ -413,6 +414,83 @@ The system forms a valid reinforcement learning closed loop. Here is the logical
 | **Per-sample reasoning** | None | One-sentence LLM explanation |
 
 Both paths converge on the same World Model checkpoint (`world_model_best.pt`), which serves as the unified reward proxy for subsequent RL fine-tuning.
+
+---
+
+## 9. Environment Awareness (v15.3.0)
+
+### Core Principle: Learn Structure, Not Content
+
+YiCeNet's World Model and main model learn **structural patterns of change** (道) — how decisions evolve under different conditions — NOT semantic content (技) such as domain knowledge, code patterns, or conversation history. Environment awareness is implemented as explicit structural conditioning at inference time, not as memorized content in model weights.
+
+```
+Allowed in env_vec (structural signals):   hour_of_day, session_turn, last_hexagram_id,
+                                            correction_rate, satisfaction_ema, attention_entropy,
+                                            last_tool_success
+Forbidden in env_vec (semantic content):   project_type, domain, current_file, language,
+                                            code_snippet, user_name, ...
+```
+
+### Two-Vector Architecture
+
+v15.3.0 introduces a two-vector system that separates external conditioning from internal readout:
+
+```
+External (7-dim env_vec) ──→ EnvironmentProjector ──→ residual on h ──→ Router
+                                                                              │
+                                                                              ▼
+                                                                    Internal (9-dim probe_vec)
+```
+
+| Vector | Dimensions | Direction | Role |
+|--------|-----------|-----------|------|
+| `env_vec` | 7 | Input (external → model) | Structural context conditioning |
+| `probe_vec` | 9 | Output (model → external) | Internal structural readout for World Model |
+
+### env_vec Layout (7 dimensions)
+
+| Index | Signal | Formula | Platform example |
+|-------|--------|---------|-----------------|
+| 0 | Time phase (sin) | sin(2π × hour / 24) | `datetime.now().hour` |
+| 1 | Time phase (cos) | cos(2π × hour / 24) | same |
+| 2 | Session depth | `session_turn / 50` (capped) | turn counter |
+| 3 | Previous hexagram | `last_hexagram_id / 63` | from previous `predict()` |
+| 4 | Correction rate | fraction of corrected turns | `corrected_count / total_turns` |
+| 5 | Satisfaction EMA | smoothed tool/turn success | `last_tool_success` or EMA |
+| 6 | Attention entropy | `MemoryBank entropy / 4` | from CrossAttention |
+
+### EnvironmentProjector
+
+- A single `nn.Linear(7, 256, bias=False)` layer, **zero-initialized**
+- Zero-init guarantees existing checkpoints load with `strict=False` and produce identical output (`h + 0 = h`)
+- During RL fine-tuning, the projector learns how each structural signal should nudge the routing distribution
+
+### Routing Confidence
+
+`predict()` now returns three new fields derived from the existing 9-dim probe vector:
+
+| Field | Type | Source | Meaning |
+|-------|------|--------|---------|
+| `env_confidence` | float 0–1 | `probe[2]` + `probe[7]` | How certain is the router |
+| `context_status` | str | threshold on confidence | "sufficient" / "partial" / "thin" |
+| `context_hint` | str | when status != sufficient | Which structural signal types to add |
+
+Formula: `confidence = sigmoid(q_gap × 3) × 0.6 + (1 − logit_entropy/log64) × 0.4`
+
+### Platform-Adaptive Usage
+
+Each platform constructs its own subset of the 7-dim env_vec. Unknown keys are silently ignored; missing keys default to 0 (zero-init projector ensures graceful degradation).
+
+```python
+# Hermes plugin — pre_llm_call hook
+env = {"hour_of_day": now.hour, "session_turn": turn, "correction_rate": cr}
+
+# Claude Code MCP — PostToolUse hook
+env = {"session_turn": turn_id, "last_tool_success": exit_code == 0}
+
+# Minimal (any platform — works but lower confidence)
+env = {}  # env_vec = None → projector is no-op, pure text routing
+```
 
 ---
 

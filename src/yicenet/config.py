@@ -1,27 +1,58 @@
 """
 YiCeNet configuration — all hyperparameters in one place.
 
-Path Resolution (dual-mode):
-  Dev (venv):  uses __file__-based auto-detection (source tree).
-  Deploy (pip): explicitly set YICENET_HOME env var, e.g.
-                YICENET_HOME=~/.hermes/data/yicenet
+Path Resolution (three-tier priority):
+  1. YICENET_HOME env var           — always wins (CI / container / forced override)
+  2. Editable install detected      — uses source tree (developer mode)
+  3. Wheel install (default)        — uses ~/.yicenet/ (end-user mode)
+
+User config overlay:
+  ~/.yicenet/config.yaml overrides YiCeNetConfig defaults for runtime-tunable
+  params (flywheel schedule, inference temperature, eval API). Model architecture
+  params are frozen per checkpoint and not exposed here.
 """
 
+import json as _json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 
-_YICENET_HOME_CACHE = None
+# ── Install-mode detection ─────────────────────────────────────────────────
+
+_INSTALL_MODE_CACHE: Optional[str] = None
+
+
+def _detect_install_mode() -> str:
+    """Return 'editable' or 'wheel' based on importlib.metadata."""
+    global _INSTALL_MODE_CACHE
+    if _INSTALL_MODE_CACHE is not None:
+        return _INSTALL_MODE_CACHE
+    try:
+        import importlib.metadata
+        raw = importlib.metadata.distribution("yicenet").read_text("direct_url.json")
+        if raw and _json.loads(raw).get("dir_info", {}).get("editable", False):
+            _INSTALL_MODE_CACHE = "editable"
+            return _INSTALL_MODE_CACHE
+    except Exception:
+        pass
+    _INSTALL_MODE_CACHE = "wheel"
+    return _INSTALL_MODE_CACHE
+
+
+# ── Home directory ─────────────────────────────────────────────────────────
+
+_YICENET_HOME_CACHE: Optional[Path] = None
 
 
 def yicenet_home() -> Path:
-    """Unified root directory for YiCeNet runtime data.
+    """Unified root directory for YiCeNet runtime data (checkpoints, data, logs).
 
     Priority:
-      1. YICENET_HOME env var (deploy mode)
-      2. __file__-based auto-detection from source tree (dev mode)
+      1. YICENET_HOME env var  → explicit override (CI, containers, dev shortcuts)
+      2. Editable install      → source tree root (developer working on YiCeNet itself)
+      3. Wheel install         → ~/.yicenet/  (end users, multi-IDE shared store)
     """
     global _YICENET_HOME_CACHE
     if _YICENET_HOME_CACHE is not None:
@@ -30,25 +61,125 @@ def yicenet_home() -> Path:
     env = os.environ.get("YICENET_HOME")
     if env:
         _YICENET_HOME_CACHE = Path(env).expanduser().resolve()
-    else:
-        # Auto-detect from this file: config.py → yicenet/ → src/ → project root
+    elif _detect_install_mode() == "editable":
+        # config.py lives at src/yicenet/config.py → go up three levels to project root
         _YICENET_HOME_CACHE = Path(__file__).resolve().parent.parent.parent
+    else:
+        _YICENET_HOME_CACHE = Path.home() / ".yicenet"
+
     return _YICENET_HOME_CACHE
 
 
+# ── Sub-directories ───────────────────────────────────────────────────────
+
 def yicenet_data_dir() -> Path:
-    """Data directory under yicenet_home."""
     return yicenet_home() / "data"
 
 
 def yicenet_checkpoint_dir() -> Path:
-    """Checkpoint directory under yicenet_home."""
     return yicenet_home() / "checkpoints"
 
 
 def yicenet_log_dir() -> Path:
-    """Log directory under yicenet_home."""
     return yicenet_home() / "logs"
+
+
+# ── User config overlay ────────────────────────────────────────────────────
+
+# Template written to ~/.yicenet/config.yaml on first bootstrap
+DEFAULT_CONFIG_YAML = """\
+# YiCeNet user configuration — ~/.yicenet/config.yaml
+# Model architecture params (hidden_dim, num_heads, …) are NOT here;
+# they are frozen per checkpoint. Only runtime-tunable settings live here.
+# Environment variables always take highest priority over these values.
+
+eval:
+  api_url: ""      # Teacher model endpoint  (overrides EVAL_API_URL)
+  model:   ""      # Teacher model name       (overrides EVAL_MODEL)
+  api_key: ""      # Prefer env var EVAL_API_KEY — avoid storing keys in files
+
+flywheel:
+  schedule_hours: 6      # Cron interval for autonomous training
+  min_buffer_size: 20    # Minimum samples required before a training run
+  slow_tau_days: 30.0    # World Model head-A power-law decay constant (hexagram)
+  fast_tau_days: 3.0     # World Model head-B power-law decay constant (external)
+
+inference:
+  gumbel_tau_init: 1.0   # Initial Gumbel-Softmax temperature
+  gumbel_tau_min:  0.1   # Minimum temperature after annealing
+  default_temperature: 0.1
+"""
+
+_USER_CONFIG_CACHE: Optional[dict] = None
+
+
+def load_user_config(force_reload: bool = False) -> dict:
+    """Load ~/.yicenet/config.yaml and return as a dict.
+
+    Returns {} silently if the file is absent or pyyaml is not installed.
+    Call with force_reload=True to invalidate the cache (e.g. after bootstrap).
+    """
+    global _USER_CONFIG_CACHE
+    if _USER_CONFIG_CACHE is not None and not force_reload:
+        return _USER_CONFIG_CACHE
+
+    config_path = Path.home() / ".yicenet" / "config.yaml"
+    if not config_path.exists():
+        _USER_CONFIG_CACHE = {}
+        return _USER_CONFIG_CACHE
+
+    try:
+        import yaml  # pyyaml — listed in core deps
+        _USER_CONFIG_CACHE = yaml.safe_load(
+            config_path.read_text(encoding="utf-8")
+        ) or {}
+    except ImportError:
+        _USER_CONFIG_CACHE = {}  # graceful degradation without pyyaml
+    except Exception:
+        _USER_CONFIG_CACHE = {}
+
+    return _USER_CONFIG_CACHE
+
+
+def get_config() -> "YiCeNetConfig":
+    """Return YiCeNetConfig with ~/.yicenet/config.yaml overrides applied.
+
+    Load order: dataclass defaults → config.yaml → env vars (highest priority).
+    Eval API settings from config.yaml are injected into os.environ so that
+    existing callers reading env vars pick them up without code changes.
+    """
+    cfg = YiCeNetConfig()
+    user = load_user_config()
+
+    def _setf(attr: str, val) -> None:
+        if val is not None:
+            try:
+                setattr(cfg, attr, float(val))
+            except (TypeError, ValueError):
+                pass
+
+    # Inference overrides
+    inf = user.get("inference", {})
+    _setf("gumbel_tau_init", inf.get("gumbel_tau_init"))
+    _setf("gumbel_tau_min",  inf.get("gumbel_tau_min"))
+
+    # Flywheel / World Model overrides
+    fw = user.get("flywheel", {})
+    _setf("wm_slow_tau_days", fw.get("slow_tau_days"))
+    _setf("wm_fast_tau_days", fw.get("fast_tau_days"))
+
+    # Eval API: inject into env vars (only if env var not already set)
+    ev = user.get("eval", {})
+    for env_key, yaml_key in (
+        ("EVAL_API_URL", "api_url"),
+        ("EVAL_MODEL",   "model"),
+        ("EVAL_API_KEY", "api_key"),
+    ):
+        val = ev.get(yaml_key, "")
+        if val and not os.environ.get(env_key):
+            os.environ[env_key] = str(val)
+
+    return cfg
 
 
 @dataclass

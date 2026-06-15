@@ -190,6 +190,7 @@ class YiCeNetEngine:
         session_id: str = "",
         turn_id: int = 0,
         turn_summary: str = "",
+        environment: Optional[dict] = None,
     ) -> dict:
         """
         Run full inference: encode → divine → evaluate → act.
@@ -198,27 +199,29 @@ class YiCeNetEngine:
             text: Natural language task description
             temperature: Gumbel sampling temperature (ignored when deterministic=True)
             deterministic: If True, bypass Gumbel noise entirely.
-                           Purely argmax over hexagram logits.
-                           Use this for rigid/fixed workflows where
-                           exploration must not interfere.
             return_prescription: If True, also run cross-attention against
                                  historical turns and return context_prescription.
-                                 Requires session_id. Backward compatible —
-                                 default False preserves existing behavior.
-            session_id: LOOM session identifier (required for prescription)
+            session_id: Session identifier (required for prescription)
             turn_id: Sequential turn number within session
-            turn_summary: Optional short text summary of this turn
+            turn_summary: Optional short summary of this turn
+            environment: Optional dict of structural signals that condition routing.
+                         Allowed keys: hour_of_day, session_turn, last_hexagram_id,
+                         correction_rate, satisfaction_ema, attention_entropy,
+                         last_tool_success.  Unknown keys are silently ignored.
+                         See env_context.py for full documentation.
 
         Returns:
             dict with keys:
                 hexagram_id, hexagram_name, hexagram_number, hexagram_pattern,
                 best_candidate, selected_hexagram_id, selected_hexagram_name,
                 candidates[{index, hexagram_id, hexagram_name, q_value}],
-                action_id, action_name, q_values, temperature, deterministic
-                context_prescription (optional, when return_prescription=True):
-                    {mode, retain_turns, summarize_turns, discard_turns,
-                     attention_entropy, compression_ratio, key_insight}
+                action_id, action_name, q_values, temperature, deterministic,
+                probes, env_confidence, context_status,
+                context_hint (only when context_status != "sufficient"),
+                context_prescription (only when return_prescription=True and session_id given)
         """
+        from .env_context import build_env_vec, compute_env_confidence
+
         self._lazy_load()
         _ensure_vocab()
 
@@ -232,9 +235,14 @@ class YiCeNetEngine:
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
 
+        # Build env vector once; None → no-op inside encode_context
+        env_vec = build_env_vec(environment)
+        if env_vec is not None:
+            env_vec = env_vec.to(device)
+
         with torch.no_grad():
-            # Encode context
-            h = self._model.encode_context(input_ids, attention_mask)
+            # Encode context (+ optional env residual)
+            h = self._model.encode_context(input_ids, attention_mask, env_vec)
 
             if deterministic:
                 # ── Deterministic path: no Gumbel noise ──
@@ -276,7 +284,8 @@ class YiCeNetEngine:
                 # ── Stochastic path: Gumbel-Softmax sampling ──
                 output = self._model(
                     input_ids, attention_mask,
-                    tau=max(temperature, 0.01), hard=True
+                    tau=max(temperature, 0.01), hard=True,
+                    env_vec=env_vec,
                 )
                 hex_idx = output["hexagram_idx"]
                 hex_probs = output["hexagram_probs"]
@@ -340,6 +349,15 @@ class YiCeNetEngine:
             "deterministic": deterministic,
             "probes": probe_list,
         }
+
+        # ── Environment confidence (derived from probe structural signals) ──
+        env_conf, ctx_status, ctx_hint = compute_env_confidence(
+            probe_list, cand_values_list
+        )
+        result["env_confidence"] = env_conf
+        result["context_status"] = ctx_status
+        if ctx_hint:
+            result["context_hint"] = ctx_hint
 
         # ── Cross-attention prescription (Phase 1) ──
         if return_prescription and session_id:
@@ -419,26 +437,22 @@ class YiCeNetEngine:
         turn_id: int = 0,
         turn_summary: str = "",
         embedding: Optional[np.ndarray] = None,
+        environment: Optional[dict] = None,
     ) -> dict:
         """Lightweight encode + store + cross-attention. No hexagram overhead.
-        
+
         ~3ms with TinyEncoder; ~2ms with external bge-small embedding.
-        Pure MemoryBank storage + cross-attention for context prescription.
-        
-        The embedding source is configurable:
-        - None (default): uses TinyEncoder (backward compatible, for hexagram)
-        - external np.ndarray(384,): uses provided embedding (for semantic similarity)
-        
-        Recommended: pass bge-small embedding from LOOM for semantic attention.
-        
+
         Args:
-            text: User input text (for fallback encoder)
-            session_id: LOOM session identifier
+            text: User input text (for fallback TinyEncoder path)
+            session_id: Session identifier
             turn_id: Sequential turn number
-            turn_summary: Optional short summary for prescription visualization
-            embedding: Optional pre-computed 384d embedding vector.
-                       When provided, skips TinyEncoder encoding.
-            
+            turn_summary: Optional short summary
+            embedding: Optional pre-computed 384d vector — skips TinyEncoder.
+            environment: Optional structural env signals (see env_context.py).
+                         Applied only on the TinyEncoder path; ignored when
+                         an external embedding is provided.
+
         Returns:
             dict with context_prescription key (always present)
         """
@@ -447,22 +461,27 @@ class YiCeNetEngine:
             encoder_np = embedding.astype(np.float32)
             encoder_np = encoder_np / (np.linalg.norm(encoder_np) + 1e-10)
         else:
-            # Fallback: use TinyEncoder (backward compatible)
+            # Fallback: use TinyEncoder (+ optional env residual)
+            from .env_context import build_env_vec
             self._lazy_load()
             _ensure_vocab()
-            
+
             config = self._config
             device = next(self._model.parameters()).device
-            
+
             input_ids, attention_mask = yicenet_encode(
                 text, max_len=config.max_seq_len
             )
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
-            
+
+            env_vec = build_env_vec(environment)
+            if env_vec is not None:
+                env_vec = env_vec.to(device)
+
             with torch.no_grad():
-                h = self._model.encode_context(input_ids, attention_mask)
-            
+                h = self._model.encode_context(input_ids, attention_mask, env_vec)
+
             encoder_np = h.squeeze(0).cpu().numpy().astype(np.float32)
             encoder_np = encoder_np / (np.linalg.norm(encoder_np) + 1e-10)
         

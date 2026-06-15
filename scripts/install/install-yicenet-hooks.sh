@@ -104,6 +104,23 @@ pip install -e "$YICENET_PATH" 2>/dev/null || pip3 install -e "$YICENET_PATH" 2>
 }
 echo "✓ Python package installed"
 
+# ── 6b. Configure YICENET_HOME in Hermes .env ──
+ENV_FILE="$HERMES_HOME.env"
+# Hermes .env may live under LOCALAPPDATA/hermes/.env
+if [ -f "$APPDATA/hermes/.env" ]; then
+    ENV_FILE="$APPDATA/hermes/.env"
+elif [ -f "$LOCALAPPDATA/hermes/.env" ]; then
+    ENV_FILE="$LOCALAPPDATA/hermes/.env"
+fi
+if ! grep -q "YICENET_HOME" "$ENV_FILE" 2>/dev/null; then
+    echo "" >> "$ENV_FILE"
+    echo "# YiCeNet runtime data root (checkpoints, vocab)" >> "$ENV_FILE"
+    echo "YICENET_HOME=$YICENET_PATH" >> "$ENV_FILE"
+    echo "✓ YICENET_HOME added to $ENV_FILE"
+else
+    echo "✓ YICENET_HOME already set in $ENV_FILE"
+fi
+
 # ── 7. Enable plugin ──
 echo ""
 echo "── Enabling plugin ──"
