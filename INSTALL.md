@@ -15,12 +15,92 @@ YiCeNet itself is a standalone PyTorch model with NO external runtime dependenci
 | sentencepiece | >= 0.1 | Tokenizer backend |
 | tqdm | >= 4.60 | Progress bars |
 | huggingface-hub | >= 0.20 | Tokenizer download |
-| httpx | >= 0.25 | HTTP client (flywheel Hermes DB access) |
+| mcp | >= 1.0 | MCP server (FastMCP for Claude Code / IDE integration) |
 
-Install via pip (pyproject.toml):
+## Install (Wheel Release)
+
+YiCeNet ships as a Python wheel via GitHub Releases. No source tree needed.
+
 ```bash
-pip install -e ~/YiCeNet
+# 1. Download the .whl from latest release
+#    https://github.com/ahillzhao-msn/YiCeNet/releases/latest
+
+# 2. Install into your venv
+pip install YiCeNet-15.4.0-py3-none-any.whl
+
+# 3. Verify
+python -c "import yicenet; print(yicenet.__version__)"
+# → 15.4.0
+
+# 4. Initialize data root + config + SOUL + target registration
+yicenet-bootstrap --auto
+# 或指定自定义 SOUL 模板：
+yicenet-bootstrap --auto --soul ~/LOOM/SOUL-template.md
 ```
+
+What `yicenet-bootstrap --auto` does:
+
+| Phase | Action |
+|:-----:|--------|
+| 1 | Detect target environments (Hermes, Claude Code, PyTorch) |
+| 2 | Install YiCeNet to target venv (pip install in editable mode) |
+| 3 | Verify dependencies |
+| 4 | Download model checkpoints |
+| **5** | **Create ~/.yicenet/ + config.yaml + SOUL.md** |
+| 6 | Register Hermes tools / Claude Code MCP server |
+| 7 | Register flywheel cron |
+
+### Resulting file tree:
+
+```
+~/.yicenet/
+├── config.yaml          # Runtime-tunable parameters (Flywheel, Inference, SOUL)
+├── SOUL.md              # YiCeNet identity — the "易之魂"
+├── checkpoints/         # Model weights (registry.json + .pt files)
+├── data/                # Flywheel training buffer
+└── logs/                # Training logs
+```
+
+## Install (Source — Development)
+
+```bash
+git clone https://github.com/ahillzhao-msn/YiCeNet.git
+cd YiCeNet
+pip install -e .
+yicenet-bootstrap --auto           # Same initialization
+```
+
+## Uninstall
+
+```bash
+# 1. Remove target registrations + (optionally) all data
+yicenet-uninstall                  # Removes Hermes plugin + Claude Code MCP entry
+yicenet-uninstall --clean-data     # + deletes ~/.yicenet/ entirely
+
+# 2. Remove the package
+pip uninstall yicenet -y
+```
+
+## SOUL Template Integration
+
+YiCeNet has its own identity template (`SOUL-template.md`) that defines
+its core philosophy — 心·道 / 骨·法 / 皮·儒 / 用·兵 — mapped to the
+64-hexagram routing framework.
+
+During `yicenet-bootstrap`, `~/.yicenet/SOUL.md` is created from this template.
+You can customize it before bootstrap:
+
+```bash
+# Use your custom SOUL during initialization
+yicenet-bootstrap --soul /path/to/your/SOUL.md
+```
+
+The SOUL influences YiCeNet in two ways:
+1. **Hexagram prior** — Each SOUL layer (道/法/儒/兵) biases the router
+   toward structurally aligned hexagrams
+2. **Environment injection** — SOUL summaries are injected into
+   Hermes system prompts / Claude Code context via the configured
+   `injection_level` in `~/.yicenet/config.yaml`
 
 ### Optional: LLM API (training / evaluation)
 
