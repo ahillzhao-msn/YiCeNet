@@ -1,6 +1,19 @@
-# YiCeNet — Build wheel + publish to GitHub Release
-# Triggered by pushing a tag v*.*.* or manually via workflow_dispatch.
-# Model checkpoints are bundled as separate release assets (not in wheel).
+# YiCeNet — Build wheel + GitHub Release
+#
+# Triggered by: push tag v*.*.* or manual workflow_dispatch.
+#
+# Release assets (per tag):
+#   yicenet-VERSION-py3-none-any.whl  — pip wheel
+#   yicenet_base.pt                   — base / seed model (~21 MB)
+#   world_model.pt                    — world model (reward prediction)
+#   registry.json                     — minimal registry (active only, no history)
+#   INSTALL.md                        — installation guide
+#   SOUL-template.md                  — YiCeNet identity template
+#   install-claudecode-hooks.sh       — Claude Code hook installer
+#   install-yicenet-hooks.sh          — Hermes hook installer
+#
+# Stable names (yicenet_base.pt, world_model.pt) allow yicenet-bootstrap
+# to auto-download from /releases/latest/download/ without knowing the version.
 
 name: build-release
 
@@ -11,20 +24,30 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g. v15.2.0)'
+        description: 'Version tag (e.g. v15.5.0) — used in release body only'
         required: false
         type: string
 
 jobs:
-  build:
-    name: Build wheel + attach checkpoints
+  release:
+    name: Build & Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required: create releases and upload assets
+
     steps:
+      # ── Checkout ────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
+      # ── Python (for asset prep script) ──────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── Build wheel ──────────────────────────────────────────────────────
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
@@ -32,38 +55,151 @@ jobs:
           cache-dependency-glob: pyproject.toml
 
       - name: Build wheel
-        run: uv build
+        run: uv build --wheel
 
-      - name: List artifacts
-        run: ls -la dist/
+      - name: Verify wheel
+        run: |
+          ls -lah dist/
+          WHL=$(ls dist/*.whl | head -1)
+          python -c "import zipfile; z=zipfile.ZipFile('$WHL'); names=[n for n in z.namelist() if 'yicenet' in n]; print('wheel contents sample:', names[:5])"
 
-      # ── Upload wheel ──
-      - name: Upload wheel to release
+      # ── Prepare release assets ───────────────────────────────────────────
+      - name: Prepare release assets
+        run: |
+          set -e
+          mkdir -p release-assets
+
+          # ── Wheel ──
+          cp dist/*.whl release-assets/
+
+          # ── Determine version string ──
+          if echo "$GITHUB_REF_NAME" | grep -qE '^v[0-9]'; then
+            VERSION="$GITHUB_REF_NAME"
+          else
+            VERSION="v$(python -c "import sys; sys.path.insert(0,'src'); import yicenet; print(yicenet.__version__)")"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Using version: $VERSION"
+
+          # ── Active checkpoint (from registry.json) ──
+          ACTIVE_PATH=$(python - <<'PYEOF'
+          import json, sys
+          try:
+              reg = json.load(open('checkpoints/registry.json'))
+              p = reg.get('active', {}).get('path', '')
+              print(p)
+          except Exception as e:
+              print('', end='')
+          PYEOF
+          )
+          echo "Active checkpoint path: '$ACTIVE_PATH'"
+
+          if [ -z "$ACTIVE_PATH" ] || [ ! -f "checkpoints/$ACTIVE_PATH" ]; then
+            echo "ERROR: active checkpoint '$ACTIVE_PATH' not found."
+            echo "Contents of checkpoints/:"
+            ls -la checkpoints/ || true
+            exit 1
+          fi
+          echo "ACTIVE_PATH=$ACTIVE_PATH" >> "$GITHUB_ENV"
+
+          cp "checkpoints/$ACTIVE_PATH" release-assets/yicenet_base.pt
+          echo "  + yicenet_base.pt  (from $ACTIVE_PATH,  $(du -sh checkpoints/$ACTIVE_PATH | cut -f1))"
+
+          # ── World model ──
+          if [ -f "checkpoints/world_model_best.pt" ]; then
+            cp checkpoints/world_model_best.pt release-assets/world_model.pt
+            echo "  + world_model.pt  ($(du -sh checkpoints/world_model_best.pt | cut -f1))"
+          else
+            echo "  · world_model_best.pt not found — skipping world_model.pt"
+          fi
+
+          # ── Minimal release registry (clean, no flywheel history) ──
+          python - <<PYEOF
+          import json, os
+          reg = json.load(open('checkpoints/registry.json'))
+          active = reg.get('active', {})
+          version = os.environ.get('VERSION', '')
+          active_path = os.environ.get('ACTIVE_PATH', '')
+          release_reg = {
+            "_note": "Release registry — place in ~/.yicenet/checkpoints/ alongside yicenet_base.pt and world_model.pt",
+            "active": {
+              "version":    active.get("version", ""),
+              "path":       "yicenet_base.pt",
+              "avg_reward": active.get("avg_reward", 0),
+              "created":    active.get("created", ""),
+              "notes":      f"YiCeNet {version} release — base model (source: {active_path})"
+            }
+          }
+          json.dump(release_reg, open('release-assets/registry.json', 'w'), indent=2)
+          print("  + registry.json  (active:", release_reg["active"]["path"], ")")
+          PYEOF
+
+          # ── Documentation & install helpers ──
+          for f in INSTALL.md SOUL-template.md; do
+            [ -f "$f" ] && cp "$f" release-assets/ && echo "  + $f" || echo "  · $f not found"
+          done
+          for sh in scripts/install/install-claudecode-hooks.sh scripts/install/install-yicenet-hooks.sh; do
+            [ -f "$sh" ] && cp "$sh" release-assets/ && echo "  + $(basename $sh)" || echo "  · $(basename $sh) not found"
+          done
+
+          echo ""
+          echo "=== Final release assets ==="
+          ls -lah release-assets/
+
+      # ── Create GitHub Release ─────────────────────────────────────────────
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.whl
           generate_release_notes: true
-          fail_on_unmatched_files: true
-
-  upload-checkpoints:
-    name: Upload model checkpoints
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: List checkpoints
-        run: ls -la checkpoints/ && echo "---" && cat checkpoints/registry.json
-
-      - name: Upload checkpoints to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            checkpoints/yicenet_v15.pt
-            checkpoints/yicenet_v18.pt
-            checkpoints/world_model_best.pt
-            checkpoints/registry.json
           fail_on_unmatched_files: false
+          body: |
+            ## Quick Install
+
+            ```bash
+            # 1. Install wheel
+            pip install https://github.com/ahillzhao-msn/YiCeNet/releases/download/${{ github.ref_name }}/yicenet-${{ env.VERSION }}-py3-none-any.whl
+
+            # 2. Bootstrap: downloads models, configures Hermes / Claude Code
+            yicenet-bootstrap
+            ```
+
+            Or let `yicenet-bootstrap` handle everything — it auto-downloads `yicenet_base.pt`
+            and `world_model.pt` from this release when no local checkpoint is found.
+
+            ---
+
+            ## Release Assets
+
+            | File | Size | Purpose |
+            |------|------|---------|
+            | `yicenet-*.whl` | ~1 MB | pip wheel — the installable package |
+            | `yicenet_base.pt` | ~22 MB | Base / seed model checkpoint |
+            | `world_model.pt` | <1 MB | World model (flywheel reward prediction) |
+            | `registry.json` | <1 KB | Checkpoint registry for `yicenet-bootstrap` |
+            | `INSTALL.md` | — | Full installation guide |
+            | `SOUL-template.md` | — | YiCeNet identity template (`~/.yicenet/SOUL.md`) |
+            | `install-claudecode-hooks.sh` | — | Claude Code hook + MCP auto-installer |
+            | `install-yicenet-hooks.sh` | — | Hermes plugin installer |
+
+            ---
+
+            ## Manual Model Setup (no bootstrap)
+
+            ```bash
+            mkdir -p ~/.yicenet/checkpoints
+            cd ~/.yicenet/checkpoints
+            BASE=https://github.com/ahillzhao-msn/YiCeNet/releases/download/${{ github.ref_name }}
+            curl -LO $BASE/yicenet_base.pt
+            curl -LO $BASE/world_model.pt
+            curl -LO $BASE/registry.json
+            ```
+
+          files: |
+            release-assets/*.whl
+            release-assets/yicenet_base.pt
+            release-assets/world_model.pt
+            release-assets/registry.json
+            release-assets/INSTALL.md
+            release-assets/SOUL-template.md
+            release-assets/install-claudecode-hooks.sh
+            release-assets/install-yicenet-hooks.sh

@@ -156,6 +156,64 @@ def ensure_deps(venv_python: str) -> bool:
 # ══════════════════════════════════════════════════
 
 
+_GITHUB_RELEASE_BASE = (
+    "https://github.com/ahillzhao-msn/YiCeNet/releases/latest/download"
+)
+
+_RELEASE_ASSETS = [
+    # (remote_filename, local_filename)
+    ("yicenet_base.pt",  "yicenet_base.pt"),
+    ("world_model.pt",   "world_model_best.pt"),
+    ("registry.json",    "registry.json"),
+]
+
+
+def _download_release_checkpoints(dest_dir: Path) -> bool:
+    """Download base model + world model from GitHub Releases (stdlib only).
+
+    Downloads to dest_dir with a simple progress indicator.
+    Returns True if at least yicenet_base.pt was successfully downloaded.
+    """
+    import urllib.request
+    import urllib.error
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+
+    def _progress(block_num: int, block_size: int, total_size: int) -> None:
+        if total_size <= 0:
+            return
+        pct = min(100, block_num * block_size * 100 // total_size)
+        bar = "#" * (pct // 5) + "." * (20 - pct // 5)
+        print(f"\r    [{bar}] {pct:3d}%", end="", flush=True)
+
+    for remote_name, local_name in _RELEASE_ASSETS:
+        url = f"{_GITHUB_RELEASE_BASE}/{remote_name}"
+        dst = dest_dir / local_name
+        try:
+            print(f"  → {remote_name}  ({url})")
+            urllib.request.urlretrieve(url, str(dst), reporthook=_progress)
+            print()  # newline after progress bar
+            size_mb = dst.stat().st_size / 1_048_576
+            print(f"    saved → {dst.name}  ({size_mb:.1f} MB)")
+            downloaded.append(local_name)
+        except urllib.error.HTTPError as e:
+            print(f"\n  ⚠ HTTP {e.code}: {remote_name} not available in this release")
+            if dst.exists():
+                dst.unlink()
+        except urllib.error.URLError as e:
+            print(f"\n  ⚠ Network error downloading {remote_name}: {e.reason}")
+            if dst.exists():
+                dst.unlink()
+            break  # no connectivity — stop trying
+        except Exception as e:
+            print(f"\n  ⚠ Unexpected error downloading {remote_name}: {e}")
+            if dst.exists():
+                dst.unlink()
+
+    return "yicenet_base.pt" in downloaded
+
+
 def ensure_checkpoints() -> bool:
     """確保至少有一個可用的檢查點。
 
@@ -216,7 +274,35 @@ def ensure_checkpoints() -> bool:
                 pass
             return True
 
-    # 4. 生成最小模型（緊急 fallback）
+    # 4. 從 GitHub Releases 下載（wheel 安裝後首次啟動的主路徑）
+    print("  · Trying GitHub Releases download...")
+    if _download_release_checkpoints(checkpoints_dir):
+        # Rebuild registry after download
+        try:
+            subprocess.run(
+                [sys.executable, str(PROJECT / "scripts" / "checkpoint_manager.py"),
+                 "fresh"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            pass
+        # Verify
+        reg_check = checkpoints_dir / "registry.json"
+        if reg_check.exists():
+            try:
+                reg2 = json.loads(reg_check.read_text())
+                ap = reg2.get("active", {}).get("path", "")
+                if ap and (checkpoints_dir / ap).exists():
+                    print(f"  ✓ Models downloaded and registered ({ap})")
+                    return True
+            except Exception:
+                pass
+        # registry not rebuilt but .pt exists — still usable
+        if any(checkpoints_dir.glob("yicenet_base.pt")):
+            print("  ✓ yicenet_base.pt downloaded (registry pending rebuild)")
+            return True
+
+    # 5. 生成最小模型（緊急 fallback）
     print("  · No pre-trained checkpoints found. Generating minimal model...")
     try:
         code = """
