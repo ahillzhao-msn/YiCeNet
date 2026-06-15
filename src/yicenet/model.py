@@ -24,6 +24,7 @@ import torch.nn.functional as F
 
 from .config import YiCeNetConfig
 from .encoder import TinyEncoder
+from .env_context import ENV_DIM
 from .hexagram import (
     generate_candidates,
     hexagram_to_lines,
@@ -157,6 +158,14 @@ class YiCeNet(nn.Module):
         )
         self.register_buffer("hexagram_patterns", patterns)
 
+        # ── EnvironmentProjector (7 → 256, zero-init) ──
+        # Injects structural env signals as an additive residual to the
+        # encoder output h.  Zero initialization guarantees that loading
+        # an old checkpoint (which lacks this parameter) with strict=False
+        # produces h + 0 = h — no behaviour change on existing weights.
+        self.env_projector = nn.Linear(ENV_DIM, config.hidden_dim, bias=False)
+        nn.init.zeros_(self.env_projector.weight)
+
         # ── 探針狀態追蹤 ──
         self._prev_hexagram_idx: int | None = None
         """上輪的卦象 ID，用於計算跳躍度（探針⑤）。由引擎在每次 predict 後更新。"""
@@ -185,9 +194,22 @@ class YiCeNet(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        env_vec: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Encode user context into state vector h."""
-        return self.encoder(input_ids, attention_mask)
+        """Encode user context into state vector h.
+
+        Args:
+            env_vec: Optional (7,) or (B, 7) structural environment vector.
+                     When provided, added as a learned residual via env_projector.
+                     None (default) → no-op, preserving existing behaviour.
+        """
+        h = self.encoder(input_ids, attention_mask)
+        if env_vec is not None:
+            ev = env_vec.to(h.device)
+            if ev.dim() == 1:
+                ev = ev.unsqueeze(0).expand(h.shape[0], -1)
+            h = h + self.env_projector(ev)
+        return h
 
     def divine(
         self,
@@ -298,6 +320,7 @@ class YiCeNet(nn.Module):
         attention_mask: torch.Tensor | None = None,
         tau: float | None = None,
         hard: bool = False,
+        env_vec: torch.Tensor | None = None,
     ) -> dict:
         """
         Full forward pass.
@@ -307,6 +330,7 @@ class YiCeNet(nn.Module):
             attention_mask: (B, T) optional
             tau: temperature override
             hard: straight-through Gumbel
+            env_vec: optional (7,) or (B, 7) structural env vector
 
         Returns:
             dict with keys:
@@ -319,8 +343,8 @@ class YiCeNet(nn.Module):
                 - action_ids: (B,) chosen actions
                 - action_logits: (B, num_actions)
         """
-        # Step 1: Encode context
-        h = self.encode_context(input_ids, attention_mask)
+        # Step 1: Encode context (+ optional env residual)
+        h = self.encode_context(input_ids, attention_mask, env_vec)
 
         # Step 2: Divine → get hexagram
         hexagram_idx, probs, hexagram_emb = self.divine(h, tau, hard)
@@ -393,6 +417,9 @@ class YiCeNet(nn.Module):
         # Cross-attention
         cross_attn_params = sum(p.numel() for p in self.trigram_cross_attn.parameters())
 
+        # EnvironmentProjector: 7 × 256 = 1,792
+        env_proj_params = sum(p.numel() for p in self.env_projector.parameters())
+
         total = (
             encoder_counts["total"]
             + router_params
@@ -401,6 +428,7 @@ class YiCeNet(nn.Module):
             + value_params
             + decoder_params
             + cross_attn_params
+            + env_proj_params
         )
 
         return {
@@ -413,6 +441,7 @@ class YiCeNet(nn.Module):
             "trigram_cross_attention": cross_attn_params,
             "value_network": value_params,
             "action_decoder": decoder_params,
+            "env_projector": env_proj_params,
             "total": total,
         }
 
@@ -467,6 +496,7 @@ def count_parameters(model: YiCeNet, verbose: bool = True) -> dict:
         print(f"  Trigram Cross-Attn:     {counts['trigram_cross_attention']:>8,}")
         print(f"  Value Network:          {counts['value_network']:>8,}")
         print(f"  Action Decoder:         {counts['action_decoder']:>8,}")
+        print(f"  Env Projector (7→256):  {counts['env_projector']:>8,}")
         print(f"  ─────────────────────────────────")
         print(f"  TOTAL:                  {counts['total']:>8,}")
         print(f"  FP32 Memory:            {counts['total'] * 4 / 1024**2:.1f} MB")

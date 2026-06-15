@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "15.2.0"
+version = "15.3.0"
 description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,10 +32,12 @@ dependencies = [
     "sentencepiece>=0.1",
     "tqdm>=4.60",
     "huggingface-hub>=0.20",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+mcp = ["mcp>=1.0"]
 
 [project.urls]
 Source = "https://github.com/ahillzhao-msn/YiCeNet"
@@ -43,6 +45,7 @@ Documentation = "https://github.com/ahillzhao-msn/YiCeNet#readme"
 
 [project.scripts]
 yicenet-bootstrap = "yicenet.bootstrap:main"
+yicenet-serve = "yicenet.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yicenet"]
