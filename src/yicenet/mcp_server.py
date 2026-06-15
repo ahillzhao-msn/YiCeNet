@@ -55,7 +55,16 @@ def _get_engine():
         except Exception:
             pass
     if not ckpt or not Path(ckpt).exists():
-        ckpt = str(checkpoint_dir / "yicenet_v15.pt")
+        # Auto-discover latest checkpoint from checkpoints/ directory
+        pt_files = sorted(checkpoint_dir.glob("yicenet_v*.pt"))
+        if pt_files:
+            ckpt = str(pt_files[-1])  # latest by version name
+        else:
+            raise RuntimeError(
+                f"No checkpoint found in {checkpoint_dir}. "
+                "Run 'yicenet-bootstrap' to download checkpoints, "
+                "or set YICENET_HOME to a directory with checkpoints."
+            )
     _engine = YiCeNetEngine(checkpoint=ckpt, project_root=str(yicenet_home()))
     return _engine
 
