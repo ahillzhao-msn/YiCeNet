@@ -539,51 +539,52 @@ def detect_claude_code() -> tuple[bool, str]:
 
 
 def setup_claude_code_mcp(python: str) -> bool:
-    """寫入 mcpServers 條目到 ~/.claude/settings.json。
+    """Register yicenet MCP server via 'claude mcp add --scope user'.
 
-    只寫 MCP server 配置（最小化）。
-    完整的 hooks（PostToolUse / Stop）由 install-claudecode-hooks.sh 負責。
+    Uses the CLI-managed user config (~/.claude.json) instead of settings.json,
+    which does not accept mcpServers. YICENET_HOME points to ~/.yicenet (the
+    runtime data root), not the source tree.
     """
-    # 先安裝 mcp extras
-    print("  → Installing yicenet[mcp] extras...")
+    yicenet_data = str(Path.home() / ".yicenet")
+
+    # Locate yicenet-serve next to the current python (works for any venv)
+    python_dir = Path(python).parent
+    serve_candidates = [
+        python_dir / "yicenet-serve",
+        python_dir / "yicenet-serve.exe",
+        Path(shutil.which("yicenet-serve") or ""),
+    ]
+    serve_bin = next((str(p) for p in serve_candidates if p.exists()), "yicenet-serve")
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("  ⚠ claude CLI not found — cannot register MCP server automatically.")
+        print(f"  · Run manually: claude mcp add --scope user yicenet \"{serve_bin}\" "
+              f"-e YICENET_HOME={yicenet_data}")
+        return False
+
     r = subprocess.run(
-        [python, "-m", "pip", "install", "-e", f"{PROJECT}[mcp]"],
-        capture_output=True, text=True, timeout=120,
+        [
+            claude_bin, "mcp", "add",
+            "--scope", "user",
+            "yicenet",
+            "-e", f"YICENET_HOME={yicenet_data}",
+            "--", serve_bin,
+        ],
+        capture_output=True, text=True, timeout=30,
     )
-    if r.returncode != 0:
-        print(f"  ⚠ mcp extras install failed: {r.stderr[:150]}")
-        print("  · Continuing without mcp extras (install manually: pip install mcp>=1.0)")
-
-    settings_path = Path.home() / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 讀取現有配置（不破壞用戶已有設置）
-    settings: dict = {}
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(f"  ⚠ {settings_path} is malformed JSON — will overwrite mcpServers only")
-
-    # 寫入 MCP server 條目
-    settings.setdefault("mcpServers", {})
-    settings["mcpServers"]["yicenet"] = {
-        "command": "yicenet-serve",
-        "args": [],
-        "env": {"YICENET_HOME": str(PROJECT)},
-    }
-
-    try:
-        settings_path.write_text(
-            json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        print(f"  ✓ mcpServers.yicenet written to {settings_path}")
+    if r.returncode == 0:
+        print(f"  ✓ yicenet MCP server registered (user scope)")
+        print(f"  · YICENET_HOME={yicenet_data}")
         print(f"  · Tools: yicenet_attend · yicenet_predict · yicenet_feedback · yicenet_switch")
         print(f"  · For full hooks (flywheel), run: scripts/install/install-claudecode-hooks.sh")
         return True
-    except Exception as e:
-        print(f"  ⚠ Failed to write {settings_path}: {e}")
+    else:
+        # Already registered is fine
+        if "already" in r.stdout.lower() or "already" in r.stderr.lower():
+            print(f"  ✓ yicenet MCP server already registered")
+            return True
+        print(f"  ⚠ claude mcp add failed: {(r.stdout + r.stderr)[:200]}")
         return False
 
 
