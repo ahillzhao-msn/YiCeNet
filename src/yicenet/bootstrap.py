@@ -318,14 +318,14 @@ def _register_crontab(schedule: str, command: str, name: str) -> bool:
 def _remove_crontab(name: str) -> bool:
     """从 crontab 移除 YiCeNet 条目。"""
     try:
-        r = sp.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return True  # 没有 crontab = 已清理
         lines = [line for line in r.stdout.split("\n")
                  if name not in line and "# YiCeNet" not in line]
         new_cron = "\n".join(lines).strip() + "\n"
-        p = sp.run(["crontab", "-"], input=new_cron, capture_output=True,
-                    text=True, timeout=10)
+        p = subprocess.run(["crontab", "-"], input=new_cron, capture_output=True,
+                            text=True, timeout=10)
         return p.returncode == 0
     except FileNotFoundError:
         return True
