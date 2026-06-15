@@ -34,7 +34,8 @@ echo "✓ YiCeNet at: $YICENET_PATH"
 
 # ── 2. Download checkpoints (if missing) ──
 CKPT_DIR="$YICENET_PATH/checkpoints"
-REQUIRED_FILES=("yicenet_v15.pt" "world_model_best.pt" "registry.json")
+RELEASE_BASE="https://github.com/ahillzhao-msn/YiCeNet/releases/latest/download"
+REQUIRED_FILES=("yicenet_base.pt" "world_model_best.pt" "registry.json")
 MISSING=0
 for f in "${REQUIRED_FILES[@]}"; do
     if [ ! -f "$CKPT_DIR/$f" ]; then
@@ -45,15 +46,14 @@ done
 
 if [ "$MISSING" -eq 1 ]; then
     echo "⚠ Checkpoints incomplete. Required: ${REQUIRED_FILES[*]}"
-    echo "  Release: https://github.com/ahillzhao-msn/YiCeNet/releases/tag/v18.0.0"
+    echo "  Release: https://github.com/ahillzhao-msn/YiCeNet/releases/latest"
     echo ""
     read -r -p "  Auto-download from GitHub releases? [y/N] " REPLY
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         mkdir -p "$CKPT_DIR"
-        RELEASE_URL="https://github.com/ahillzhao-msn/YiCeNet/releases/download/v18.0.0"
-        for f in yicenet_v15.pt minimal.pt world_model_best.pt registry.json; do
+        for f in yicenet_base.pt world_model_best.pt registry.json; do
             echo "    Downloading $f..."
-            curl -sL "$RELEASE_URL/$f" -o "$CKPT_DIR/$f" &
+            curl -sL "$RELEASE_BASE/$f" -o "$CKPT_DIR/$f" &
         done
         wait
         echo "  ✓ Checkpoints downloaded to $CKPT_DIR"
@@ -95,14 +95,16 @@ cp "$SCRIPT_DIR/__init__.py" "$PLUGIN_DIR/__init__.py" 2>/dev/null || {
 }
 echo "✓ __init__.py"
 
-# ── 6. Install Python package (ensure yicenet is importable) ──
+# ── 6. Verify Python package (must be pip-installed as a wheel, not editable) ──
 echo ""
-echo "── Installing Python package ──"
-pip install -e "$YICENET_PATH" 2>/dev/null || pip3 install -e "$YICENET_PATH" 2>/dev/null || {
-    echo "⚠ pip install failed. Make sure yicenet is on PYTHONPATH:"
-    echo "  export PYTHONPATH=\$YICENET_PATH/src:\$PYTHONPATH"
+echo "── Verifying Python package ──"
+python3 -c "import yicenet; print('✓ yicenet', yicenet.__version__, 'importable')" 2>/dev/null \
+    || python -c "import yicenet; print('✓ yicenet', yicenet.__version__, 'importable')" 2>/dev/null \
+    || {
+    echo "⚠ yicenet not importable. Install the wheel first:"
+    echo "  pip install yicenet  # or from GitHub Releases"
+    exit 1
 }
-echo "✓ Python package installed"
 
 # ── 6b. Configure YICENET_HOME in Hermes .env ──
 ENV_FILE="$HERMES_HOME.env"
@@ -115,8 +117,8 @@ fi
 if ! grep -q "YICENET_HOME" "$ENV_FILE" 2>/dev/null; then
     echo "" >> "$ENV_FILE"
     echo "# YiCeNet runtime data root (checkpoints, vocab)" >> "$ENV_FILE"
-    echo "YICENET_HOME=$YICENET_PATH" >> "$ENV_FILE"
-    echo "✓ YICENET_HOME added to $ENV_FILE"
+    echo "YICENET_HOME=$HOME/.yicenet" >> "$ENV_FILE"
+    echo "✓ YICENET_HOME=$HOME/.yicenet added to $ENV_FILE"
 else
     echo "✓ YICENET_HOME already set in $ENV_FILE"
 fi

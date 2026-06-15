@@ -216,25 +216,14 @@ class ContextPrescription:
         compressed = n_summarized * 0.9 + n_discarded * 1.0
         rx.compression_ratio = compressed / total if total > 0 else 0.0
         
-        # --- Key insight ---
+        # --- Key insight (公交站台风格: 简洁、聚焦) ---
+        top_turns = rx.retain_turns[:3]
+        turns_str = ", ".join(f"#{t}" for t in top_turns)
         if attn_entropy < 0.5:
-            # Highly concentrated — one or two turns dominate
-            top_turns = rx.retain_turns[:3]
-            rx.key_insight = (
-                f"注意力集中於輪次 {top_turns} "
-                f"(熵={attn_entropy:.2f})"
-            )
+            rx.key_insight = f"焦點: 輪次 {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
         elif attn_entropy > 2.5:
-            top_turns = rx.retain_turns[:3]
-            rx.key_insight = (
-                f"注意力分散，輪次 {top_turns} 略高於平均 "
-                f"(熵={attn_entropy:.2f})"
-            )
+            rx.key_insight = f"發散 ({turns_str} 略高), 壓縮比 {rx.compression_ratio:.0%}"
         else:
-            top_turns = rx.retain_turns[:3]
-            rx.key_insight = (
-                f"焦點: 輪次 {top_turns}，"
-                f"壓縮比 {rx.compression_ratio:.0%}"
-            )
+            rx.key_insight = f"焦點: 輪次 {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
         
         return rx

@@ -30,10 +30,10 @@ else
 fi
 
 # ── 2. Core setup via bootstrap ──
-# Handles: pip install yicenet[mcp], checkpoints, mcpServers entry in settings.json
+# Handles: checkpoints, ~/.yicenet/ init, claude mcp add (user scope)
 echo ""
 echo "── Running yicenet-bootstrap --target claude-code ──"
-YICENET_HOME="$YICENET_PATH" python3 "$YICENET_PATH/src/yicenet/bootstrap.py" \
+YICENET_HOME="$HOME/.yicenet" python3 "$YICENET_PATH/src/yicenet/bootstrap.py" \
     --target claude-code --auto --skip-cron
 echo "✓ Core setup done"
 
@@ -70,7 +70,7 @@ post_tool_cmd = (
     "YICENET_SID=$(" + _sid + "); "
     "python3 -c \""
     "import json,sys,os; "
-    "os.environ.setdefault('YICENET_HOME', '" + yicenet_path + "'); "
+    "os.environ.setdefault('YICENET_HOME', os.path.expanduser('~/.yicenet')); "
     "from yicenet.flywheel import submit_trajectory; "
     "d=json.load(sys.stdin) if not sys.stdin.isatty() else {}; "
     "ok=d.get('exit_code',0)==0; "

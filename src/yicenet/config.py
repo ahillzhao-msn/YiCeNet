@@ -109,6 +109,11 @@ inference:
   gumbel_tau_min:  0.1   # Minimum temperature after annealing
   default_temperature: 0.1
 
+runtime:
+  transformers_offline: true   # Disable HF Hub network calls (use local cache)
+  hf_hub_offline: true         # Same for huggingface_hub
+  tqdm_disable: true           # Suppress progress bars (MCP server / Hermes plugin)
+
 # ── SOUL template integration ──
 soul:
   enabled: true               # Load SOUL.md for hexagram prior + injection
