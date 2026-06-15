@@ -1,36 +1,70 @@
 """
 YiCeNet environment context utilities — platform-agnostic structural signals.
 
-Converts platform-specific runtime state into a normalized 7-dim structural
+Converts platform-specific runtime state into a normalized 16-dim structural
 vector that conditions the EnvironmentProjector inside YiCeNet, sharpening
 hexagram routing without embedding any semantic content into model weights.
 
 DESIGN PRINCIPLE (道 not 技):
-  Allowed signal types — structural, timing, rate-based:
-    hour_of_day, session_turn, last_hexagram_id,
-    correction_rate, satisfaction_ema, attention_entropy, last_tool_success
+  Allowed signal types — structural, timing, rate-based, chain-dynamic:
+    hour_of_day, day_of_week, session_turn, memory_bank_depth,
+    last_hexagram_id, hexagram_stability, hexagram_velocity,
+    clan_diversity, hexagram_entropy, last_tool_success,
+    correction_rate, completed_rate, praised_rate,
+    satisfaction_ema, attention_entropy
 
   Forbidden — semantic content that would seep into model weights:
     project_type, domain, current_file, language, framework, user_name, ...
 
-  Unknown keys in the env dict are silently ignored so the API stays
-  forward-compatible as platforms add richer signals over time.
+  Unknown keys are silently ignored; missing keys produce 0.0 in their slot
+  (which the zero-initialized EnvironmentProjector treats as no contribution).
+  This means any platform can pass a partial dict and degrade gracefully.
 
-Usage (Hermes plugin):
+16-Dim Vector Layout
+────────────────────────────────────────────────────────────────────────────
+Group            Slot  Signal                       Notes
+────────────────────────────────────────────────────────────────────────────
+Time phase        [0]  sin(2π × hour / 24)          (0,0) when not provided
+                  [1]  cos(2π × hour / 24)
+                  [2]  sin(2π × day_of_week / 7)    (0,0) when not provided
+                  [3]  cos(2π × day_of_week / 7)
+────────────────────────────────────────────────────────────────────────────
+Session depth     [4]  session_turn / 50             how deep in the session
+                  [5]  memory_bank_depth / 100       turns stored in MemoryBank
+                  [6]  last_hexagram_id / 63         most recent hexagram (0=unknown)
+                  [7]  hexagram_stability / 20       consecutive same-hexagram turns
+────────────────────────────────────────────────────────────────────────────
+Hexagram chain    [8]  hexagram_velocity             jump_distance EMA / 63 (0-1)
+dynamics          [9]  clan_diversity                visited clans / 8 (0-1)
+(卦链动态)       [10]  hexagram_entropy              Shannon entropy of recent dist (0-1)
+                 [11]  last_tool_success_bin         1.0 success / 0.5 unknown / 0.0 fail
+────────────────────────────────────────────────────────────────────────────
+Quality signals  [12]  correction_rate               corrected turns / total
+                 [13]  completed_rate                completed turns / total
+                 [14]  praised_rate                  praised turns / total
+────────────────────────────────────────────────────────────────────────────
+Attention        [15]  attention_entropy / 4         MemoryBank focus level (0-1)
+────────────────────────────────────────────────────────────────────────────
+
+Auto-computed by the engine when session_id is provided (callers do not need
+to supply these manually):  memory_bank_depth, hexagram_stability,
+hexagram_velocity, clan_diversity, hexagram_entropy.
+
+Everything else can be supplied by the calling platform.  Slots that are
+left at 0 produce zero gradient contribution from the zero-initialized
+EnvironmentProjector until training teaches them to be meaningful.
+
+Usage (Hermes plugin — partial dict, engine fills the rest):
     env = {
         "hour_of_day": datetime.now().hour,
-        "session_turn": session_store.get_turn(session_id),
-        "last_hexagram_id": memory_bank.get_last_hexagram(session_id),
+        "day_of_week": datetime.now().weekday(),
         "correction_rate": compute_recent_correction(session_id),
     }
-    result = engine.predict(text, environment=env)
+    result = engine.predict(text, session_id=session_id, environment=env)
 
-Usage (Claude Code MCP):
-    yicenet_predict(
-        task_brief="search knowledge base",
-        session_id="abc123",
-        environment={"session_turn": 7, "last_tool_success": True}
-    )
+Usage (Claude Code MCP — minimal dict):
+    yicenet_predict(task_brief="...", session_id="abc",
+                    environment={"last_tool_success": True})
 """
 
 from __future__ import annotations
@@ -40,60 +74,81 @@ from typing import Optional
 
 import torch
 
-ENV_DIM = 7
+ENV_DIM = 16
 """Dimensionality of the structural environment vector fed to EnvironmentProjector."""
 
-# ── 7-dim vector layout ────────────────────────────────────────────────────
-# [0]  sin(2π × hour / 24)      — time-of-day phase (sine component)
-# [1]  cos(2π × hour / 24)      — time-of-day phase (cosine component)
-# [2]  session_turn / 50.0      — conversation depth, capped at 1.0
-# [3]  last_hexagram_id / 63.0  — previous hexagram state (0.0 when unknown)
-# [4]  correction_rate          — fraction of recent turns that were corrected (0-1)
-# [5]  satisfaction_ema         — smoothed tool/turn success signal (0-1)
-# [6]  attention_entropy / 4.0  — MemoryBank focus level (0=sharp, 1=diffuse)
-# ──────────────────────────────────────────────────────────────────────────
-
-_LOG64 = math.log(64)  # ≈ 4.158 — max entropy for 64-way routing distribution
+_LOG64 = math.log(64)
 
 
 def build_env_vec(context: Optional[dict]) -> Optional[torch.Tensor]:
-    """Convert environment context dict → normalized 7-dim structural vector.
+    """Convert environment context dict -> normalized 16-dim structural vector.
 
     Returns None when context is absent or empty; the EnvironmentProjector
-    in YiCeNet treats None as a no-op (zero residual), preserving backward
-    compatibility with existing checkpoints.
+    treats None as a no-op (h += 0), preserving full backward compatibility.
+
+    Unknown keys are silently ignored.  Missing keys default to 0.0 (or 0.5
+    for satisfaction/tool-success where neutral differs from absent).
 
     Args:
-        context: dict with any subset of structural signal keys.
-                 Unknown keys are silently ignored.
+        context: dict with any subset of the structural signal keys documented
+                 at the module level.
 
     Returns:
-        Float32 tensor of shape (7,), or None.
+        Float32 tensor of shape (16,), or None.
     """
     if not context:
         return None
 
-    hour = float(context.get("hour_of_day", 12.0))
-    turn = float(context.get("session_turn", 0.0))
-    last_hx = float(context.get("last_hexagram_id", -1.0))
-    corr = float(context.get("correction_rate", 0.0))
-    sat = float(context.get("satisfaction_ema", 0.5))
-    attn_e = float(context.get("attention_entropy", 2.0))
-    tool_ok = context.get("last_tool_success")
-
-    sin_h = math.sin(2.0 * math.pi * hour / 24.0)
-    cos_h = math.cos(2.0 * math.pi * hour / 24.0)
-    turn_n = min(turn / 50.0, 1.0)
-    hx_n = last_hx / 63.0 if last_hx >= 0.0 else 0.0
-    corr_n = max(0.0, min(1.0, corr))
-    if tool_ok is not None:
-        sat_n = 1.0 if bool(tool_ok) else 0.0
+    # ── Time phase (slots 0-3) ─────────────────────────────────────────────
+    hour = context.get("hour_of_day")
+    if hour is not None:
+        h = float(hour)
+        sin_h = math.sin(2.0 * math.pi * h / 24.0)
+        cos_h = math.cos(2.0 * math.pi * h / 24.0)
     else:
-        sat_n = max(0.0, min(1.0, sat))
-    attn_n = max(0.0, min(1.0, attn_e / 4.0))
+        sin_h = cos_h = 0.0  # unknown → zero contribution
+
+    dow = context.get("day_of_week")
+    if dow is not None:
+        d = float(dow)
+        sin_d = math.sin(2.0 * math.pi * d / 7.0)
+        cos_d = math.cos(2.0 * math.pi * d / 7.0)
+    else:
+        sin_d = cos_d = 0.0  # unknown → zero contribution
+
+    # ── Session depth (slots 4-7) ──────────────────────────────────────────
+    turn_n    = min(float(context.get("session_turn", 0.0)) / 50.0, 1.0)
+    depth_n   = min(float(context.get("memory_bank_depth", 0.0)) / 100.0, 1.0)
+    last_hx   = float(context.get("last_hexagram_id", -1.0))
+    hx_n      = last_hx / 63.0 if last_hx >= 0.0 else 0.0
+    stab_n    = min(float(context.get("hexagram_stability", 0.0)) / 20.0, 1.0)
+
+    # ── Hexagram chain dynamics (slots 8-11) ───────────────────────────────
+    vel_n     = max(0.0, min(1.0, float(context.get("hexagram_velocity", 0.0))))
+    clan_n    = max(0.0, min(1.0, float(context.get("clan_diversity", 0.0))))
+    ent_n     = max(0.0, min(1.0, float(context.get("hexagram_entropy", 0.0))))
+    tool_ok   = context.get("last_tool_success")
+    if tool_ok is None:
+        tool_bin = 0.5
+    else:
+        tool_bin = 1.0 if bool(tool_ok) else 0.0
+
+    # ── Quality signals (slots 12-14) ─────────────────────────────────────
+    corr_n    = max(0.0, min(1.0, float(context.get("correction_rate", 0.0))))
+    comp_n    = max(0.0, min(1.0, float(context.get("completed_rate", 0.0))))
+    praise_n  = max(0.0, min(1.0, float(context.get("praised_rate", 0.0))))
+
+    # ── Attention entropy (slot 15) ────────────────────────────────────────
+    attn_n    = max(0.0, min(1.0, float(context.get("attention_entropy", 0.0)) / 4.0))
 
     return torch.tensor(
-        [sin_h, cos_h, turn_n, hx_n, corr_n, sat_n, attn_n],
+        [
+            sin_h, cos_h, sin_d, cos_d,          # 0-3 time
+            turn_n, depth_n, hx_n, stab_n,        # 4-7 session
+            vel_n, clan_n, ent_n, tool_bin,        # 8-11 chain
+            corr_n, comp_n, praise_n,              # 12-14 quality
+            attn_n,                                # 15 attention
+        ],
         dtype=torch.float32,
     )
 
@@ -102,15 +157,11 @@ def compute_env_confidence(
     probe_list: Optional[list],
     q_values: Optional[list],
 ) -> tuple[float, str, str]:
-    """Derive routing confidence from existing probe + Q-value structural signals.
+    """Derive routing confidence from the existing 9-dim probe vector.
 
-    This function reads probe[2] (logit_entropy) and probe[7] (q_gap) — both
-    purely structural, zero semantic content — to estimate how certain the
-    hexagram router is given the current input.
-
-    Low confidence indicates the model lacks structural context to route
-    confidently; the hint suggests which structural signal types to add.
-    Note: the hint describes *signal types*, not content recommendations.
+    Reads probe[2] (logit_entropy) and probe[7] (q_gap) — purely structural
+    signals extracted after inference — to estimate how certain the hexagram
+    router is given the current input.  No semantic content is used.
 
     Args:
         probe_list: 9-element probe vector from predict() (may be None).
@@ -120,21 +171,16 @@ def compute_env_confidence(
         (confidence, status, hint)
             confidence: float 0-1
             status:     "sufficient" | "partial" | "thin"
-            hint:       empty string when sufficient, else short suggestion
+            hint:       empty string when sufficient; type suggestion otherwise
     """
     if not probe_list or not q_values:
         return 0.5, "partial", ""
 
-    # probe_list[2] = logit_entropy (high = diffuse = uncertain routing)
-    # probe_list[7] = q_gap (small = two candidates nearly tied = uncertain)
     logit_entropy = float(probe_list[2]) if len(probe_list) > 2 else 2.0
-    q_gap = float(probe_list[7]) if len(probe_list) > 7 else 0.0
+    q_gap         = float(probe_list[7]) if len(probe_list) > 7 else 0.0
 
-    # q_conf: sigmoid of gap×3 — large gap → confident
-    q_conf = 1.0 / (1.0 + math.exp(-q_gap * 3.0))
-    # e_conf: fraction of entropy headroom used (low entropy = high conf)
-    e_conf = 1.0 - (logit_entropy / _LOG64)
-
+    q_conf     = 1.0 / (1.0 + math.exp(-q_gap * 3.0))
+    e_conf     = 1.0 - (logit_entropy / _LOG64)
     confidence = round(q_conf * 0.6 + e_conf * 0.4, 3)
     confidence = max(0.0, min(1.0, confidence))
 
@@ -144,12 +190,12 @@ def compute_env_confidence(
         return (
             confidence,
             "partial",
-            "session_turn and correction_rate would sharpen this prediction",
+            "session_turn, correction_rate, or last_tool_success would sharpen this prediction",
         )
     else:
         return (
             confidence,
             "thin",
             "low routing confidence — consider providing: "
-            "session_turn, last_hexagram_id, correction_rate",
+            "session_turn, last_hexagram_id, correction_rate, last_tool_success",
         )
