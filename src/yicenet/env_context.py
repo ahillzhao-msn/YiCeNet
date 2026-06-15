@@ -159,7 +159,7 @@ def compute_env_confidence(
 ) -> tuple[float, str, str]:
     """Derive routing confidence from the existing 9-dim probe vector.
 
-    Reads probe[2] (logit_entropy) and probe[7] (q_gap) — purely structural
+    Reads probe[2] (logit_entropy) and probe[6] (q_gap) — purely structural
     signals extracted after inference — to estimate how certain the hexagram
     router is given the current input.  No semantic content is used.
 
@@ -177,7 +177,7 @@ def compute_env_confidence(
         return 0.5, "partial", ""
 
     logit_entropy = float(probe_list[2]) if len(probe_list) > 2 else 2.0
-    q_gap         = float(probe_list[7]) if len(probe_list) > 7 else 0.0
+    q_gap         = float(probe_list[6]) if len(probe_list) > 6 else 0.0  # [6]=q_gap, [7]=jump_distance
 
     q_conf     = 1.0 / (1.0 + math.exp(-q_gap * 3.0))
     e_conf     = 1.0 - (logit_entropy / _LOG64)
