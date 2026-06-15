@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "15.4.0"
+version = "15.5.0"
 description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,6 +45,7 @@ Documentation = "https://github.com/ahillzhao-msn/YiCeNet#readme"
 
 [project.scripts]
 yicenet-bootstrap = "yicenet.bootstrap:main"
+yicenet-uninstall = "yicenet.bootstrap:uninstall_cli"
 yicenet-serve = "yicenet.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]

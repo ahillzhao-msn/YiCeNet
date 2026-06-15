@@ -108,6 +108,14 @@ inference:
   gumbel_tau_init: 1.0   # Initial Gumbel-Softmax temperature
   gumbel_tau_min:  0.1   # Minimum temperature after annealing
   default_temperature: 0.1
+
+# ── SOUL template integration ──
+soul:
+  enabled: true               # Load SOUL.md for hexagram prior + injection
+  template_path: ""           # Empty = ~/.yicenet/SOUL.md
+  priority_weights: [0.3, 0.2, 0.2, 0.3]  # 心/骨/皮/用 prior contribution
+  inject_targets: ["hermes", "claude-code"]
+  injection_level: "summary"  # "none" | "summary" | "full"
 """
 
 _USER_CONFIG_CACHE: Optional[dict] = None

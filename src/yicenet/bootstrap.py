@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""
-YiCeNet Bootstrap — 一鍵安裝初始化。
+"""YiCeNet Bootstrap — 一鍵安裝/卸載初始化。
 
 安裝到現有 venv（共享），必要時創建獨立 venv。
 按 --target 自動配置 Hermes 工具鏈接 / Claude Code MCP server，
-並註冊 flywheel cron。
+註冊 flywheel cron。首次運行自動初始化 ~/.yicenet/ 目錄結構、
+config.yaml 模板和 SOUL.md 身份文件。
 
 用法：
   yicenet-bootstrap                            # auto: 檢測並配置所有已裝的 IDE
   yicenet-bootstrap --target hermes            # 只配置 Hermes
   yicenet-bootstrap --target claude-code       # 只配置 Claude Code
   yicenet-bootstrap --auto                     # 全自動（無交互確認）
+  yicenet-bootstrap --soul ~/my-soul.md        # 自定義 SOUL 模板
   yicenet-bootstrap --venv /path/to/venv       # 指定 venv
   python3 scripts/bootstrap.py                 # 源碼樹直接運行
+
+卸載：
+  yicenet-uninstall                            # 移除目標環境註冊
+  yicenet-uninstall --clean-data               # + 刪除 ~/.yicenet/ 所有數據
+  pip uninstall yicenet                        # 移除包
 """
 
 from __future__ import annotations
@@ -274,57 +280,160 @@ def setup_hermes_tool(hermes_available: bool):
         print(f"  ⚠ Hermes tool link failed: {e}")
 
 
-def register_flywheel_cron(hermes_available: bool):
-    """註冊 flywheel cron（每 6 小時——學習新對話模式）。"""
-    if not hermes_available:
-        print("  · Flywheel cron: Hermes not available, skip")
-        return
+def _get_flywheel_command() -> str:
+    """生成调用 flywheel_run() 的 Python 命令（平台无关）。"""
+    # 使用 sys.executable 确保用当前 Python，不走 PATH 猜测
+    return f'"{sys.executable}" -m yicenet.flywheel'
 
-    cron_name = "yicenet-flywheel"
-    cron_script_path = PROJECT / "scripts" / "flywheel_cron.sh"
 
-    # 創建 cron wrapper 腳本
-    if not cron_script_path.exists():
-        _create_flywheel_script(cron_script_path)
+def _cron_schedule_expr(hours: int) -> str:
+    """生成 crontab 表达式。"""
+    return f"0 */{max(1, hours)} * * *"
 
+
+def _register_crontab(schedule: str, command: str, name: str) -> bool:
+    """在 Linux/macOS 上注册 crontab 条目。"""
+    import subprocess as sp
+    comment = f"# YiCeNet Flywheel — {name}"
+    entry = f"{schedule} {command} >> $HOME/.yicenet/logs/flywheel.log 2>&1"
+
+    try:
+        # 读取现有 crontab
+        r = sp.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+        existing = r.stdout if r.returncode == 0 else ""
+        if name in existing:
+            return False  # 已注册
+
+        # 追加新条目
+        new_cron = existing.rstrip() + "\n" + comment + "\n" + entry + "\n"
+        p = sp.run(["crontab", "-"], input=new_cron, capture_output=True,
+                    text=True, timeout=10)
+        return p.returncode == 0
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _remove_crontab(name: str) -> bool:
+    """从 crontab 移除 YiCeNet 条目。"""
+    try:
+        r = sp.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return True  # 没有 crontab = 已清理
+        lines = [line for line in r.stdout.split("\n")
+                 if name not in line and "# YiCeNet" not in line]
+        new_cron = "\n".join(lines).strip() + "\n"
+        p = sp.run(["crontab", "-"], input=new_cron, capture_output=True,
+                    text=True, timeout=10)
+        return p.returncode == 0
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+
+
+def _register_schtasks(schedule_hours: int, command: str, name: str) -> bool:
+    """在 Windows 上注册 Task Scheduler 任务。"""
+    task_name = f"YiCeNet\\{name}"
+    try:
+        # 检查是否已存在
+        r = subprocess.run(
+            ["schtasks.exe", "/Query", "/TN", task_name, "/FO", "LIST"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            return False  # 已注册
+
+        # 创建任务（每 6 小时重复，无限期）
+        subprocess.run(
+            ["schtasks.exe", "/Create", "/SC", "HOURLY",
+             "/MO", str(schedule_hours),
+             "/TN", task_name,
+             "/TR", command,
+             "/F",  # 强制覆盖
+             ],
+            capture_output=True, text=True, timeout=15,
+        )
+        return True
+    except FileNotFoundError:
+        print("  ⚠ schtasks.exe not found — Windows Task Scheduler unavailable")
+        return False
+    except Exception:
+        return False
+
+
+def _remove_schtasks(name: str) -> bool:
+    """从 Windows Task Scheduler 移除 YiCeNet 任务。"""
+    task_name = f"YiCeNet\\{name}"
     try:
         r = subprocess.run(
-            ["hermes", "cron", "list"],
+            ["schtasks.exe", "/Delete", "/TN", task_name, "/F"],
             capture_output=True, text=True, timeout=10,
         )
-        if cron_name in r.stdout:
-            print(f"  · Flywheel cron '{cron_name}' already registered")
-            return
-
-        subprocess.run(
-            ["hermes", "cron", "create",
-             "--name", cron_name,
-             "--schedule", "0 */6 * * *",
-             "--script", str(cron_script_path),
-             ],
-            capture_output=True, text=True, timeout=10,
-        )
-        print(f"  ✓ Flywheel cron registered (every 6h)")
-    except Exception as e:
-        print(f"  ⚠ Flywheel cron error: {e}")
-
-
-def _create_flywheel_script(path: Path):
-    """創建 flywheel cron wrapper。"""
-    content = f"""#!/usr/bin/env bash
-# YiCeNet Flywheel — Hermes cron wrapper
-# Runs model update training, logs to {PROJECT}/logs/
-
-cd {PROJECT}
-python3 -m yicenet.flywheel >> logs/flywheel.log 2>&1
-echo "flywheel: done at $(date)"
-"""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        path.chmod(0o755)
+        return r.returncode == 0
     except Exception:
-        pass
+        return False
+
+
+def register_flywheel_cron(schedule_hours: int = 6):
+    """註冊 flywheel 定時任務（平台自適應）。
+
+    Linux/macOS → crontab 條目
+    Windows     → Task Scheduler (schtasks.exe)
+
+    調度周期取自 ~/.yicenet/config.yaml flywheel.schedule_hours，默認 6h。
+    """
+    import platform
+    system = platform.system().lower()
+
+    cron_name = "yicenet-flywheel"
+    command = _get_flywheel_command()
+
+    if system in ("linux", "darwin"):
+        schedule = _cron_schedule_expr(schedule_hours)
+        ok = _register_crontab(schedule, command, cron_name)
+        if ok:
+            print(f"  ✓ Flywheel cron registered (crontab, every {schedule_hours}h)")
+        elif ok is False:
+            print(f"  · Flywheel cron already registered (crontab)")
+        else:
+            print(f"  ⚠ Flywheel cron failed — crontab not available")
+            print(f"    手動添加到 crontab (crontab -e)：")
+            print(f"    {schedule} {command} >> $HOME/.yicenet/logs/flywheel.log 2>&1")
+
+    elif system == "windows":
+        ok = _register_schtasks(schedule_hours, command, cron_name)
+        if ok:
+            print(f"  ✓ Flywheel task registered (Task Scheduler, every {schedule_hours}h)")
+        elif ok is False:
+            print(f"  · Flywheel task already registered (Task Scheduler)")
+        else:
+            print(f"  ⚠ Flywheel task registration failed")
+
+    else:
+        print(f"  · Flywheel: unsupported platform '{system}' — skip")
+        print(f"    手動設置定時任務：")
+        print(f"    {command}")
+
+
+def unregister_flywheel_cron(silent: bool = False):
+    """移除飛輪定時任務（平台自適應）。"""
+    import platform
+    system = platform.system().lower()
+    cron_name = "yicenet-flywheel"
+    log = lambda msg: None if silent else print(f"  {msg}")
+
+    if system in ("linux", "darwin"):
+        ok = _remove_crontab(cron_name)
+        log(f"{'✓' if ok else '·'} Flywheel crontab: {'removed' if ok else 'not found'}")
+
+    elif system == "windows":
+        ok = _remove_schtasks(cron_name)
+        log(f"{'✓' if ok else '·'} Flywheel Task Scheduler: {'removed' if ok else 'not found'}")
+
+    else:
+        log(f"· Flywheel: {system} — manual cleanup needed")
 
 
 # ══════════════════════════════════════════════════
@@ -397,6 +506,138 @@ def setup_claude_code_mcp(python: str) -> bool:
 # ══════════════════════════════════════════════════
 
 
+def init_data_root(soul_path: str = "") -> None:
+    """创建 ~/.yicenet/ 目录结构 + config.yaml 模板 + SOUL 副本.
+
+    - ~/.yicenet/config.yaml         (从 DEFAULT_CONFIG_YAML 写入，不覆盖已有文件)
+    - ~/.yicenet/SOUL.md             (从模板拷贝，不覆盖已有文件)
+    - ~/.yicenet/checkpoints/
+    - ~/.yicenet/data/
+    - ~/.yicenet/logs/
+    """
+    try:
+        from yicenet.config import yicenet_data_dir, DEFAULT_CONFIG_YAML
+    except ImportError:
+        print("  ⚠ yicenet not installed yet — skipping data root init")
+        return
+
+    data_root = yicenet_data_dir()
+    created = []
+
+    # Directories
+    for sub in ("checkpoints", "data", "logs"):
+        (data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    # config.yaml (from template)
+    cfg_path = data_root / "config.yaml"
+    if not cfg_path.exists():
+        cfg_path.write_text(DEFAULT_CONFIG_YAML, encoding="utf-8")
+        created.append(f"config.yaml")
+
+    # SOUL.md
+    soul_dst = data_root / "SOUL.md"
+    if not soul_dst.exists():
+        if soul_path and os.path.isfile(soul_path):
+            shutil.copy2(soul_path, soul_dst)
+            created.append(f"SOUL.md (from {soul_path})")
+        else:
+            # Look for SOUL-template.md in project root
+            project_soul = PROJECT / "SOUL-template.md"
+            if project_soul.exists():
+                shutil.copy2(str(project_soul), str(soul_dst))
+                created.append("SOUL.md (from SOUL-template.md)")
+            else:
+                print("  · SOUL.md: not found (SKIP)")
+
+    if created:
+        print(f"  ✓ ~/.yicenet/ created: {', '.join(created)}")
+    else:
+        print("  · ~/.yicenet/ already initialized (no changes)")
+
+
+# ══════════════════════════════════════════════════
+# 卸载
+# ══════════════════════════════════════════════════
+
+
+def uninstall(clean_data: bool = False, silent: bool = False) -> None:
+    """卸载 YiCeNet 并从目标环境移除注册.
+
+    Steps:
+    1. 从 Hermes plugin 目录移除 yicenet-hooks
+    2. 从 ~/.claude/settings.json 移除 MCP 条目
+    3. pip uninstall yicenet (optional)
+    4. --clean-data: rm -rf ~/.yicenet/
+    """
+    log = lambda msg: None if silent else print(f"  {msg}")
+
+    print()
+    print("╔══════════════════════════════════════════╗")
+    print("║  YiCeNet Uninstall                       ║")
+    print("╚══════════════════════════════════════════╝")
+
+    # 1. Hermes plugin
+    hermes_plugins = Path.home() / ".hermes" / "plugins"
+    yicenet_dir = hermes_plugins / "yicenet-hooks"
+    if yicenet_dir.exists():
+        try:
+            shutil.rmtree(str(yicenet_dir))
+            log("✓ Hermes plugin: yicenet-hooks removed")
+        except Exception as e:
+            log(f"✗ Hermes plugin removal failed: {e}")
+    else:
+        log("· Hermes plugin: not found")
+
+    # 2. Claude Code MCP config
+    claude_settings = Path.home() / ".claude" / "settings.json"
+    if claude_settings.exists():
+        try:
+            settings = json.loads(claude_settings.read_text(encoding="utf-8"))
+            mcps = settings.get("mcpServers", {})
+            if "yicenet" in mcps:
+                del mcps["yicenet"]
+                settings["mcpServers"] = mcps
+                claude_settings.write_text(
+                    json.dumps(settings, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                log("✓ Claude Code MCP: yicenet entry removed")
+            else:
+                log("· Claude Code MCP: not found")
+        except Exception as e:
+            log(f"✗ Claude Code MCP cleanup failed: {e}")
+    else:
+        log("· Claude Code settings: not found")
+
+    # 3. Flywheel scheduler
+    log("· Flywheel scheduler: cleaning up...")
+    unregister_flywheel_cron(silent=silent)
+
+    # 4. Data cleanup
+    if clean_data:
+        data_root = Path.home() / ".yicenet"
+        if data_root.exists():
+            try:
+                shutil.rmtree(str(data_root))
+                log(f"✓ ~/.yicenet/ removed")
+            except Exception as e:
+                log(f"✗ ~/.yicenet/ removal failed: {e}")
+        else:
+            log("· ~/.yicenet/: not found")
+
+    print()
+    print("  卸载完成。如需彻底删除包，请运行：")
+    print("    pip uninstall yicenet")
+
+
+def uninstall_cli() -> None:
+    parser = argparse.ArgumentParser(description="Uninstall YiCeNet")
+    parser.add_argument("--clean-data", action="store_true",
+                        help="删除 ~/.yicenet/ 所有数据 (checkpoints, config, 日志)")
+    args = parser.parse_args()
+    uninstall(clean_data=args.clean_data)
+
+
 def setup_env():
     """創建 .env（如果不存在）。"""
     env_path = PROJECT / ".env"
@@ -418,7 +659,7 @@ def setup_env():
 
 def bootstrap(auto: bool = False, venv: str = "",
               skip_cron: bool = False, skip_hermes: bool = False,
-              target: str = "auto"):
+              target: str = "auto", soul: str = ""):
     """執行 YiCeNet 完整初始化。
 
     target: 'auto'        — 檢測所有已安裝 IDE，逐一配置
@@ -487,8 +728,9 @@ def bootstrap(auto: bool = False, venv: str = "",
     ensure_checkpoints()
     print()
 
-    # ── Phase 5: 配置 ──
-    print("── Phase 5: 配置 ──")
+    # ── Phase 5: 資料根初始化 ──
+    print("── Phase 5: 資料根初始化 ──")
+    init_data_root(soul_path=soul)
     setup_env()
     print()
 
@@ -515,14 +757,19 @@ def bootstrap(auto: bool = False, venv: str = "",
         print("  (skipped)")
     print()
 
-    # ── Phase 7: Cron ──
+    # ── Phase 7: 飛輪定時任務 ──
     if not skip_cron:
-        print("── Phase 7: Cron ──")
-        # flywheel cron 目前仍由 Hermes 管理；Claude Code 用 hooks 代替
-        if hermes_ok and target in ("auto", "hermes"):
-            register_flywheel_cron(hermes_ok)
-        else:
-            print("  · Flywheel cron: managed by Hermes (not applicable for claude-code target)")
+        print("── Phase 7: 飛輪定時任務 ──")
+        try:
+            from yicenet.config import load_user_config
+            user_cfg = load_user_config()
+            schedule_hours = (
+                user_cfg.get("flywheel", {}).get("schedule_hours", 6)
+                or 6
+            )
+        except Exception:
+            schedule_hours = 6
+        register_flywheel_cron(schedule_hours=schedule_hours)
         print()
 
     # ── 完成 ──
@@ -551,6 +798,10 @@ def main():
         choices=["auto", "hermes", "claude-code"],
         help="配置目標：auto=檢測所有, hermes=只配 Hermes, claude-code=只配 Claude Code",
     )
+    parser.add_argument(
+        "--soul", default="",
+        help="SOUL 模板路徑（預設: YiCeNet/SOUL-template.md → ~/.yicenet/SOUL.md）",
+    )
     args = parser.parse_args()
     bootstrap(
         auto=args.auto,
@@ -558,6 +809,7 @@ def main():
         skip_cron=args.skip_cron,
         skip_hermes=args.skip_hermes,
         target=args.target,
+        soul=args.soul,
     )
 
 
