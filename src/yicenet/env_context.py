@@ -80,6 +80,26 @@ ENV_DIM = 16
 _LOG64 = math.log(64)
 
 
+def env_vec_dropout(
+    env_vec: torch.Tensor,
+    p: float = 0.3,
+    training: bool = True,
+) -> torch.Tensor:
+    """Randomly zero individual env_vec slots during training.
+
+    Each slot is independently masked with probability p so the
+    EnvironmentProjector learns to operate robustly on any subset of
+    provided signals.  At inference time (training=False) returns env_vec
+    unchanged, preserving the full structural context.
+
+    Works on both 1-D (16,) and batched (B, 16) tensors.
+    """
+    if not training or p <= 0.0:
+        return env_vec
+    mask = (torch.rand_like(env_vec) > p).float()
+    return env_vec * mask
+
+
 def build_env_vec(context: Optional[dict]) -> Optional[torch.Tensor]:
     """Convert environment context dict -> normalized 16-dim structural vector.
 

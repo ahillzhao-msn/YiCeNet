@@ -18,6 +18,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -31,9 +32,44 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from yicenet.config import YiCeNetConfig
 from yicenet.model import YiCeNet, count_parameters
+from yicenet.env_context import build_env_vec, env_vec_dropout, ENV_DIM
 
 # Dataset — session-based is default; synthetic fallback kept in function body
 from yicenet.data.dataset import SessionDataset, DataDrivenEnv
+
+
+# ── Training-time env helpers (structural proxies from real data) ──────────
+
+def _state_to_env(state: dict) -> dict:
+    """Map RL state dict to env_context dict for build_env_vec()."""
+    return {
+        "session_turn": int(state["session_depth"] * 50),
+        "correction_rate": max(0.0, 1.0 - state["success_rate"]),
+        "completed_rate": state["success_rate"],
+        "praised_rate": max(0.0, state["user_engagement"] - 0.5) * 2.0,
+        "last_tool_success": state["success_rate"] > 0.5,
+    }
+
+
+def _batch_env_from_features(features: torch.Tensor) -> torch.Tensor:
+    """Build (B, ENV_DIM) env_vec batch from (B, 8) SessionDataset feature tensors.
+
+    Feature layout (from dataset.py):
+      [0] success_rate  [2] complexity  [4] sequential_depth
+      [5] cache_hit     [6] error_rate  [7] diversity
+    """
+    vecs = []
+    for feat in features:
+        ctx = {
+            "session_turn": float(feat[4]) * 50,        # sequential_depth → turn
+            "correction_rate": float(feat[6]),           # error_rate proxy
+            "completed_rate": float(feat[0]),            # success_rate
+            "praised_rate": float(feat[7]) * 0.5,        # diversity proxy
+            "last_tool_success": float(feat[5]) > 0.5,  # cache_hit proxy
+        }
+        ev = build_env_vec(ctx)
+        vecs.append(ev if ev is not None else torch.zeros(ENV_DIM))
+    return torch.stack(vecs)  # (B, ENV_DIM)
 
 
 def pretrain_stage(
@@ -46,6 +82,7 @@ def pretrain_stage(
     lr: float = 1e-3,
     device: str = "cuda",
     checkpoint_dir: str = "checkpoints",
+    env_dropout: float = 0.3,
 ):
     """
     Stage 1: Unsupervised pre-training.
@@ -117,13 +154,16 @@ def pretrain_stage(
         model.hexagram_embed.embedding.weight.copy_(centroids.to(device))
     print("  Initialized hexagram embeddings with cluster centroids.")
 
-    # Phase 3: Contrastive fine-tuning (trains encoder + hexagram embeddings)
+    # Phase 3: Contrastive fine-tuning (hexagram embeddings + env_projector)
     print(f"\nPhase 3: Contrastive embedding fine-tuning ({epochs} epochs)...")
-    # Train both the encoder AND hexagram embeddings so the encoder learns
-    # to produce meaningful representations of BPE-tokenized input
+    # env_projector is trained here alongside hexagram_embed so it learns
+    # which env signals correlate with which hexagram clusters.
+    # Encoder stays frozen (no_grad) to preserve pre-trained representations.
     optimizer = torch.optim.AdamW(
         list(model.encoder.parameters()) +
-        list(model.hexagram_embed.parameters()), lr=lr, weight_decay=1e-5
+        list(model.hexagram_embed.parameters()) +
+        list(model.env_projector.parameters()),
+        lr=lr, weight_decay=1e-5,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs
@@ -138,8 +178,14 @@ def pretrain_stage(
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
+            # Encoder: frozen — no gradient flows back to it
             with torch.no_grad():
-                h = model.encode_context(input_ids, attention_mask)
+                h_base = model.encoder(input_ids, attention_mask)
+
+            # env_projector: gradient flows — learns cluster-env correlation
+            env_vecs = _batch_env_from_features(batch["features"]).to(device)
+            env_vecs = env_vec_dropout(env_vecs, p=env_dropout, training=True)
+            h = h_base + model.env_projector(env_vecs)
 
             # Compute similarity with all hexagram embeddings
             hex_emb = model.hexagram_embed.embedding.weight  # (64, D)
@@ -160,7 +206,7 @@ def pretrain_stage(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 list(model.hexagram_embed.parameters()) +
-                list(model.encoder.parameters()), 1.0
+                list(model.env_projector.parameters()), 1.0
             )
             optimizer.step()
 
@@ -238,6 +284,7 @@ def rl_train_stage(
     lr: float = 3e-4,
     device: str = "cuda",
     checkpoint_dir: str = "checkpoints",
+    env_dropout: float = 0.3,
 ):
     """
     Stage 2: RL fine-tuning with REINFORCE.
@@ -260,13 +307,15 @@ def rl_train_stage(
     if isinstance(env, DataDrivenEnv):
         print(f"  Using real session environment ({len(env.samples)} samples)")
 
-    # Optimizer: only train router + value network + action decoder
-    # Keep encoder and hexagram embeddings frozen during initial RL
+    # Optimizer: router + value network + action decoder + env_projector
+    # Encoder and hexagram embeddings stay frozen during initial RL.
+    # env_projector is included so it can refine routing based on env signals.
     trainable_params = list(model.router.parameters()) + \
                        list(model.value_net.parameters()) + \
                        list(model.action_decoder.parameters()) + \
                        [model.trigram_prototypes] + \
-                       list(model.trigram_cross_attn.parameters())
+                       list(model.trigram_cross_attn.parameters()) + \
+                       list(model.env_projector.parameters())
 
     optimizer = torch.optim.AdamW(
         trainable_params, lr=lr, weight_decay=config.weight_decay
@@ -298,14 +347,10 @@ def rl_train_stage(
         while not done:
             step += 1
 
-            # Convert state dict to input tensor
-            state_tensor = torch.tensor(
-                [[state["success_rate"], state["latency"],
-                  state["complexity"], state["parallel_degree"] / 5.0,
-                  state["session_depth"], state["user_engagement"],
-                  state["token_cost"], 0.5]],
-                dtype=torch.float32, device=device,
-            )
+            # Build env_vec from current RL state (dropout for robustness)
+            _ev = build_env_vec(_state_to_env(state))
+            if _ev is not None:
+                _ev = env_vec_dropout(_ev, p=env_dropout, training=True).to(device)
 
             # Simulate input_ids for the encoder (use state proxy)
             # In production, this would be the actual user input
@@ -315,8 +360,9 @@ def rl_train_stage(
             )
             attention_mask = torch.ones(1, seq_len, device=device)
 
-            # Forward pass
-            output = model(input_ids, attention_mask, tau=model.tau, hard=False)
+            # Forward pass with structural env conditioning
+            output = model(input_ids, attention_mask, tau=model.tau, hard=False,
+                           env_vec=_ev)
 
             # Safety: skip step if output contains NaN
             has_nan = any(torch.isnan(v).any() for v in output.values()
@@ -450,6 +496,10 @@ def main():
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--env_dropout", type=float, default=0.3,
+        help="Per-slot env_vec dropout probability during training (0=disabled)",
+    )
     parser.add_argument("--export_onnx", action="store_true",
                         help="Export model to ONNX after training")
 
@@ -538,6 +588,7 @@ def main():
             lr=args.lr,
             device=device,
             checkpoint_dir=args.checkpoint_dir,
+            env_dropout=args.env_dropout,
         )
 
     # Stage 2: RL
@@ -568,6 +619,7 @@ def main():
             lr=args.lr,
             device=device,
             checkpoint_dir=args.checkpoint_dir,
+            env_dropout=args.env_dropout,
         )
 
     # Export to ONNX
