@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "15.5.1"
+version = "15.5.2"
 description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
 readme = "README.md"
 requires-python = ">=3.10"
