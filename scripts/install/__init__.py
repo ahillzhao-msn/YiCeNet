@@ -27,13 +27,10 @@ from typing import Any
 logging.getLogger("yicenet-hooks").setLevel(logging.INFO)
 logger = logging.getLogger("yicenet-hooks")
 
-# YiCeNet source path
-_YICENET_SRC = os.path.expanduser("~/YiCeNet/src")
-if _YICENET_SRC not in sys.path:
-    sys.path.insert(0, _YICENET_SRC)
+from yicenet.config import yicenet_data_dir
 
-# Flywheel buffer path
-_YICENET_BUFFER = str(Path.home() / "YiCeNet" / "data" / "flywheel_buffer.jsonl")
+# Flywheel buffer path — platform-independent data root
+_YICENET_BUFFER = str(yicenet_data_dir() / "flywheel_buffer.jsonl")
 
 # Per-session token usage accumulator
 _session_usage: dict[str, dict[str, float]] = {}

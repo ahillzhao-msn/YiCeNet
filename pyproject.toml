@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "15.3.1"
+version = "15.4.0"
 description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = "MIT"
 keywords = ["iching", "hexagram", "orchestration", "neural-network", "yicenet"]
 
 authors = [
-    {name = "YiCeNet Contributors"},
+    {name = "ahillzhao-msn", email = "105655625+ahillzhao-msn@users.noreply.github.com"},
 ]
 
 classifiers = [
@@ -33,11 +33,11 @@ dependencies = [
     "tqdm>=4.60",
     "huggingface-hub>=0.20",
     "pyyaml>=6.0",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
-mcp = ["mcp>=1.0"]
 
 [project.urls]
 Source = "https://github.com/ahillzhao-msn/YiCeNet"

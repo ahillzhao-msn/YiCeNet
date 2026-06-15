@@ -496,7 +496,7 @@ def count_parameters(model: YiCeNet, verbose: bool = True) -> dict:
         print(f"  Trigram Cross-Attn:     {counts['trigram_cross_attention']:>8,}")
         print(f"  Value Network:          {counts['value_network']:>8,}")
         print(f"  Action Decoder:         {counts['action_decoder']:>8,}")
-        print(f"  Env Projector (7→256):  {counts['env_projector']:>8,}")
+        print(f"  Env Projector (16→256):  {counts['env_projector']:>8,}")
         print(f"  ─────────────────────────────────")
         print(f"  TOTAL:                  {counts['total']:>8,}")
         print(f"  FP32 Memory:            {counts['total'] * 4 / 1024**2:.1f} MB")
