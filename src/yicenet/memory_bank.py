@@ -73,12 +73,10 @@ class SessionBuffer:
 
 
 class MemoryBank:
-    """Per-session turn storage.
-    
-    Singleton-like: one instance per YiCeNet engine, manages all sessions.
+    """Per-session turn storage. Implements IMemoryBank.
+
+    One instance per engine; manages all sessions in-process.
     Sessions are isolated — no cross-session leakage.
-    
-    Thread-safe for single-process use (Hermes runs single-threaded per session).
     """
     
     def __init__(self, max_turns_per_session: int = 5000):
