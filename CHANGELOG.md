@@ -2,6 +2,27 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [15.6.0] — 2026-06-16
+
+### Added
+
+- **Tokenizer 本地缓存** — `~/.yicenet/tokenizer/qwen2.5-0.5b/` 存储
+  Qwen2.5-BPE tokenizer（5 文件，~11 MB）。`_get_qwen_tokenizer()` 从本地
+  路径加载，`trust_remote_code=False`，永不联网。
+  (`src/yicenet/tokenizer.py`)
+- **`download_tokenizer()`** — 公开函数，通过 huggingface_hub 或 HTTPS
+  回退下载 tokenizer 文件。
+- **`tokenizer_available()`** — 检查本地是否已缓存。
+- **Bootstrap Phase 4b** — `yicenet-bootstrap --auto` 自动下载 tokenizer。
+  (`src/yicenet/bootstrap.py`)
+
+### Changed
+
+- **`install-yicenet-hooks.sh` → `install-hermes-hooks.sh`** — 脚本更名，
+  反映其安装在 Hermes 而非 YiCeNet 的事实。工作流和发布资产同步更新。
+  (`scripts/install/install-hermes-hooks.sh`,
+  `.github/workflows/build-release.yml`)
+
 ## [15.5.5] — 2026-06-15
 
 ### Added

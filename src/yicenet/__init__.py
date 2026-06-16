@@ -3,7 +3,7 @@ YiCeNet (易策网络) — I Ching inspired lightweight orchestration engine for
 ~5.6M parameters (5,671,859), ~22 MB FP32, <3 ms inference.
 """
 
-__version__ = "15.5.6"
+__version__ = "15.6.0"
 
 # Public API
 from .yicenet_engine import YiCeNetEngine, get_engine, predict
@@ -20,4 +20,5 @@ __all__ = [
     "format_prediction", "hexagram_symbol",
     "MemoryBank", "get_memory_bank", "TurnRecord",
     "CrossAttention", "ContextPrescription", "Prescription",
+    "download_tokenizer", "tokenizer_available",
 ]
