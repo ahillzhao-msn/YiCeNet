@@ -291,6 +291,25 @@ def get_vocab_size() -> int:
     return min(8000, len(_load_vocab_map()) + 1)
 
 
+# ── ITokenizer adapter ────────────────────────────────────────────────────────
+
+class QwenTokenizerAdapter:
+    """Wraps module-level encode() + get_vocab_size() as an ITokenizer object.
+
+    Used by ProviderRegistry.default() to inject into YiCeNetEngine.
+    Import-time cost: zero (lazy load inside encode()).
+    """
+
+    def encode(self, text: str, max_len: int = 128):
+        return encode(text, max_len=max_len)
+
+    def get_vocab_size(self) -> int:
+        return get_vocab_size()
+
+    def download(self, hf_token: str = "") -> bool:
+        return download_tokenizer(hf_token=hf_token)
+
+
 # ── Test ──
 if __name__ == "__main__":
     # Download tokenizer if not cached
