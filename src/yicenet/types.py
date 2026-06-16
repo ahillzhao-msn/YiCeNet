@@ -49,3 +49,27 @@ class EnvAnalysis(TypedDict, total=False):
     env_confidence: float
     context_status: str
     context_hint: str
+
+
+class DisplayConfig(TypedDict, total=False):
+    """Configuration for the YiCeNet display layer.
+
+    Resolved by get_display_config() from ~/.yicenet/config.yaml.
+    Injected into ProviderRegistry.display via get_display(cfg).
+
+    mode:
+        "compact"  — single-line glyph + judgment  [䷟ 恒] * 亨无咎利贞
+        "detailed" — multi-line: Q-values, candidates, hint
+        "json"     — JSON string of key fields (for machine consumers)
+        "silent"   — no output (testing)
+    hexagram_chain:
+        Prepend turn-history chain prefix when chain is supplied to render().
+        Requires callers to pass chain= argument.
+    unicode_symbols:
+        True  — U+4DC0–U+4DFF glyphs  (default when stdout supports them)
+        False — ASCII fallback  [#32]
+        Absent — auto-detect from sys.stdout.encoding at render time.
+    """
+    mode: str
+    hexagram_chain: bool
+    unicode_symbols: bool

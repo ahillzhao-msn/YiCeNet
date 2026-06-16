@@ -48,6 +48,8 @@ def pre_message_send() -> None:
 
     try:
         from yicenet.engine_provider import EngineProvider
+        from yicenet.providers import ProviderRegistry
+
         engine = EngineProvider.get_engine()
 
         env = {
@@ -55,25 +57,32 @@ def pre_message_send() -> None:
             "session_turn": turn_id,
         }
 
-        # Lightweight prescription (attend)
         prescription = engine.prescribe(
             task_text=prompt or "general task",
             session_id=session_id,
             turn_id=turn_id,
             environment=env,
-        )
+        ).to_dict()  # Prescription → dict for JSON serialization
 
-        # Full prediction for hexagram framing on complex tasks
         result = engine.predict(
             prompt or "general task",
             temperature=0.1,
             environment=env,
         )
 
+        # Compact human-readable label via display layer
+        display = ProviderRegistry.default().display
+        chain = None
+        if session_id and display.needs_chain:
+            from yicenet.memory_bank import get_memory_bank
+            chain = get_memory_bank().get_hexagram_history(session_id)
+        label = display.render(result, chain=chain)
+
         output = {
             "yicenet": {
                 "session_id": session_id,
                 "turn_id": turn_id,
+                "label": label,
                 "hexagram": result.get("selected_hexagram_name", ""),
                 "action": result.get("action_name", ""),
                 "env_confidence": result.get("env_confidence", 0.0),
