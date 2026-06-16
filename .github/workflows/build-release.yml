@@ -81,14 +81,21 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Using version: $VERSION"
 
-          # ── Active checkpoint (from registry.json) ──
+          # ── Active checkpoint (registry.json → fallback minimal.pt) ──
           ACTIVE_PATH=$(python - <<'PYEOF'
-          import json, sys
-          try:
-              reg = json.load(open('checkpoints/registry.json'))
-              p = reg.get('active', {}).get('path', '')
+          import json, os
+          p = ''
+          if os.path.exists('checkpoints/registry.json'):
+              try:
+                  reg = json.load(open('checkpoints/registry.json'))
+                  p = reg.get('active', {}).get('path', '') or ''
+              except Exception:
+                  pass
+          if p and os.path.exists(f'checkpoints/{p}'):
               print(p)
-          except Exception as e:
+          elif os.path.exists('checkpoints/minimal.pt'):
+              print('minimal.pt')
+          else:
               print('', end='')
           PYEOF
           )
