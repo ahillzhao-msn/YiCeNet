@@ -19,6 +19,7 @@ from .memory_bank import MemoryBank, get_memory_bank, TurnRecord
 from .cross_attention import CrossAttention, ContextPrescription, Prescription
 from .types import PredictionResult, EnvAnalysis, DisplayConfig
 from .interfaces import IDisplay
+from .tokenizer import download_tokenizer, tokenizer_available
 
 __all__ = [
     "YiCeNetEngine", "get_engine", "predict",
