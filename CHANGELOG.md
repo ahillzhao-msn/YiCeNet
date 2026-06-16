@@ -2,6 +2,25 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [15.5.5] — 2026-06-15
+
+### Added
+
+- **Display config** — `~/.yicenet/config.yaml` gains `display:` section with
+  `hexagram_chain` (卦链开关) and `mode` (`bus_stop` | `detailed`).
+  `get_display_config()` reads it; `format_prediction()` accepts `bus_stop` as
+  alias for `compact`. (`src/yicenet/config.py`, `src/yicenet/display.py`)
+- **`LOOM.yml display.hexagram_mode`** — Display mode config moved from
+  YiCeNet to LOOM's own config where it belongs. (`~/LOOM/loom.yml`)
+
+### Changed
+
+- **Hermes plugin env setup** — Plugin now reads `~/.yicenet/config.yml`
+  `runtime:` section at init time, sets `TRANSFORMERS_OFFLINE=1`,
+  `HF_HUB_OFFLINE=1`, `TQDM_DISABLE=1` before engine loads. Buffer path
+  uses `yicenet_data_dir()` instead of hardcoded `~/.hermes/data/yicenet/`.
+  (`~/.hermes/plugins/yicenet-hooks/__init__.py`)
+
 ## [15.5.4] — 2026-06-15
 
 ### Fixed

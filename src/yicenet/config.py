@@ -114,6 +114,14 @@ runtime:
   hf_hub_offline: true         # Same for huggingface_hub
   tqdm_disable: true           # Suppress progress bars (MCP server / Hermes plugin)
 
+# ── Display (standalone mode) ──
+# hexagram_chain: 是否显示卦链（跨轮演进序列）
+# mode:           bus_stop (精简) | detailed (含Q值、候选)
+# LOOM 调用时传入自己的显示参数，不读此配置
+display:
+  hexagram_chain: true   # 独立运行时显示卦链
+  mode: bus_stop         # bus_stop | detailed
+
 # ── SOUL template integration ──
 soul:
   enabled: true               # Load SOUL.md for hexagram prior + injection
@@ -193,6 +201,20 @@ def get_config() -> "YiCeNetConfig":
             os.environ[env_key] = str(val)
 
     return cfg
+
+
+def get_display_config() -> dict:
+    """Return display settings from ~/.yicenet/config.yaml.
+
+    Returns:
+        {"hexagram_chain": bool, "mode": "bus_stop"|"detailed"}
+    """
+    user = load_user_config()
+    disp = user.get("display", {})
+    return {
+        "hexagram_chain": disp.get("hexagram_chain", True),
+        "mode": disp.get("mode", "bus_stop"),
+    }
 
 
 @dataclass
