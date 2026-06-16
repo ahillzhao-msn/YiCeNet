@@ -17,6 +17,13 @@ import os
 import sys
 import datetime
 
+# Windows cp1252 stdout rejects CJK characters; reconfigure to UTF-8 globally.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def _session_id(payload: dict) -> str:
     """Derive a stable 12-char session_id from the hook payload."""

@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 
-from .config import yicenet_data_dir, yicenet_home
+from .config import load_user_config, yicenet_data_dir, yicenet_home
 
 _TOK = None  # lazy-loaded Qwen tokenizer
 _VOCAB_MAP = None  # lazy-loaded {qwen_id: yicenet_id}
@@ -143,9 +143,24 @@ def _get_qwen_tokenizer():
       1. ~/.yicenet/tokenizer/qwen2.5-0.5b/   (local, preferred)
       2. HF Hub cache  (via TRANSFORMERS_OFFLINE guard)
       3. HF Hub network (last resort, may block)
+
+    Before importing `transformers`, reads ~/.yicenet/config.yaml's
+    `runtime.transformers_offline` and `runtime.hf_hub_offline` to set
+    the corresponding environment variables.  This suppresses HF Hub
+    network probes even when the tokenizer is cached locally — the
+    config.yaml's ``runtime:`` section was previously doc-only.
     """
     global _TOK
     if _TOK is None:
+        # ── Apply runtime config before importing transformers ──
+        # load_user_config() is cached, so repeated calls are cheap.
+        # setdefault() preserves any explicit env override from the user.
+        _rt = load_user_config().get("runtime", {})
+        if _rt.get("transformers_offline", False):
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        if _rt.get("hf_hub_offline", False):
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
         from transformers import AutoTokenizer
 
         local_dir = _tokenizer_dir()
