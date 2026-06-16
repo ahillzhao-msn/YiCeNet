@@ -617,6 +617,79 @@ class YiCeNetEngine:
 
         return {"context_prescription": prescription}
 
+    def prescribe(
+        self,
+        task_text: str,
+        session_id: str,
+        turn_id: int = 0,
+        turn_summary: str = "",
+        environment: Optional[dict] = None,
+    ) -> dict:
+        """Context prescription: encode + memory store + cross-attention.
+
+        Clean replacement for attend(). Same logic, clearer name aligned with
+        the IEngine interface. Returns the Prescription as a dict.
+        """
+        return self.attend(
+            task_text,
+            session_id=session_id,
+            turn_id=turn_id,
+            turn_summary=turn_summary,
+            environment=environment,
+        ).get("context_prescription", {})
+
+    def analyze(
+        self,
+        task_brief: str,
+        environment: Optional[dict] = None,
+    ) -> dict:
+        """Fast environment analysis (~3ms): encode + probes only, no routing.
+
+        Returns EnvAnalysis-shaped dict with probes, env_confidence,
+        context_status, context_hint. Does NOT update MemoryBank.
+        """
+        from .env_context import build_env_vec, compute_env_confidence
+
+        self._lazy_load()
+        _ensure_vocab()
+
+        config = self._config
+        device = next(self._model.parameters()).device
+
+        input_ids, attention_mask = yicenet_encode(task_brief, max_len=config.max_seq_len)
+        input_ids = input_ids.to(device)
+        attention_mask = attention_mask.to(device)
+
+        env_vec = build_env_vec(environment)
+        if env_vec is not None:
+            env_vec = env_vec.to(device)
+
+        with torch.no_grad():
+            h = self._model.encode_context(input_ids, attention_mask, env_vec)
+
+        from yicenet.probes import extract_probes_tensor
+        probe_tensor = extract_probes_tensor(
+            h=h,
+            router_logits=torch.zeros(1, 64, device=device),
+            router_probs=torch.ones(1, 64, device=device) / 64,
+            candidate_values=torch.zeros(1, 8, 1, device=device),
+            hexagram_idx=torch.zeros(1, dtype=torch.long, device=device),
+            prev_hexagram_idx=None,
+            action_logits=torch.zeros(1, len(ACTION_NAMES), device=device),
+        )
+        probe_list = probe_tensor.tolist()
+        dummy_q = [0.0] * 8
+        conf, status, hint = compute_env_confidence(probe_list, dummy_q)
+
+        result: dict = {
+            "probes": probe_list,
+            "env_confidence": conf,
+            "context_status": status,
+        }
+        if hint:
+            result["context_hint"] = hint
+        return result
+
     def switch_model(self, checkpoint_path: str) -> bool:
         """Hot-switch to a different checkpoint."""
         if not os.path.exists(checkpoint_path):
