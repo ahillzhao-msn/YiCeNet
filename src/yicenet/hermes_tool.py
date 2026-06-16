@@ -16,92 +16,9 @@ import sys
 try:
     from tools.registry import registry
 except ModuleNotFoundError:
-    # Not running inside Hermes — this module is a Hermes tool, not a library.
-    # The actual functions (yicenet_predict, yicenet_switch) work fine via
-    # direct import when called with the right context.
     registry = None
 
-# Resolve YiCeNet runtime data directory (checkpoints, vocab, etc.)
-# Priority: YICENET_HOME env var > auto-detect from installed package
-try:
-    from yicenet.config import yicenet_home, yicenet_checkpoint_dir
-    _YICENET_ROOT = str(yicenet_home())
-    _CHECKPOINT_DIR = str(yicenet_checkpoint_dir())
-except ImportError:
-    # Fallback: auto-detect from hermes-agent/tools/ → ~/YiCeNet
-    _YICENET_ROOT = os.path.abspath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "..", "..", "YiCeNet"
-    ))
-    _CHECKPOINT_DIR = os.path.join(_YICENET_ROOT, "checkpoints")
-
-# Lazy engine import (avoids torch load at Hermes startup)
-_engine = None
-_active_version = None  # tracks registry.json['active']['version'] for hot-reload
-
-def _get_engine():
-    global _engine, _active_version
-    if _engine is None:
-        from yicenet.yicenet_engine import YiCeNetEngine
-        # Read active checkpoint from registry
-        reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
-        ckpt = ""
-        if os.path.exists(reg_path):
-            try:
-                with open(reg_path) as f:
-                    reg = json.load(f)
-                ckpt = reg.get("active", {}).get("path", "")
-                _active_version = reg.get("active", {}).get("version", "")
-                # Resolve relative path (relative to checkpoints/)
-                if ckpt and not os.path.isabs(ckpt):
-                    ckpt = os.path.join(_CHECKPOINT_DIR, ckpt)
-            except Exception:
-                pass
-        if not ckpt or not os.path.exists(ckpt):
-            ckpt = os.path.join(_CHECKPOINT_DIR, "yicenet_v15.pt")
-        _engine = YiCeNetEngine(checkpoint=ckpt, project_root=_YICENET_ROOT)
-    return _engine
-
-
-def _check_registry_switch():
-    """Check if registry.json active version changed since engine load.
-    If so, hot-switch the engine to the new checkpoint."""
-    global _active_version, _engine
-
-    reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
-    if not os.path.exists(reg_path):
-        return
-
-    try:
-        with open(reg_path) as f:
-            reg = json.load(f)
-        active = reg.get("active", {})
-        new_version = active.get("version", "")
-        new_path = active.get("path", "")
-
-        # Resolve relative path
-        if new_path and not os.path.isabs(new_path):
-            new_path = os.path.join(_CHECKPOINT_DIR, new_path)
-
-        # No change, skip
-        if new_version == _active_version or not new_path:
-            return
-
-        # Version changed — hot-switch
-        if not os.path.exists(new_path):
-            return
-
-        if _engine is not None:
-            _engine.switch_model(new_path)
-        else:
-            # Lazy load will pick it up
-            _engine = None
-            _get_engine()
-
-        _active_version = new_version
-        print(f"[YiCeNet] Hot-switched to {new_version}: {new_path}")
-    except Exception:
-        pass
+from yicenet.engine_provider import EngineProvider
 
 
 def yicenet_predict(task_brief: str, temperature: float = 0.1,
@@ -109,7 +26,7 @@ def yicenet_predict(task_brief: str, temperature: float = 0.1,
                     return_prescription: bool = False,
                     session_id: str = "",
                     turn_id: int = 0,
-                    turn_summary: str = "") -> str:
+                    turn_summary: str = "") -> str:  # noqa: D417
     """
     Predict orchestration skeleton for a task description.
 
@@ -124,9 +41,8 @@ def yicenet_predict(task_brief: str, temperature: float = 0.1,
     Default False preserves existing behavior.
     """
     try:
-        # Check if registry.json active changed since last call
-        _check_registry_switch()
-        engine = _get_engine()
+        EngineProvider.check_switch()
+        engine = EngineProvider.get_engine()
         result = engine.predict(
             task_brief, temperature, deterministic,
             return_prescription=return_prescription,
@@ -159,12 +75,9 @@ def yicenet_predict(task_brief: str, temperature: float = 0.1,
 
 
 def yicenet_switch(checkpoint: str) -> str:
-    """
-    Hot-switch YiCeNet to a different checkpoint (A/B swap).
-    """
+    """Hot-switch YiCeNet to a different checkpoint (A/B swap)."""
     try:
-        engine = _get_engine()
-        engine.switch_model(checkpoint)
+        EngineProvider.switch(checkpoint)
         return json.dumps({"success": True, "active": checkpoint})
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -173,21 +86,10 @@ def yicenet_switch(checkpoint: str) -> str:
 def check_yicenet_requirements() -> bool:
     """Check if YiCeNet can run."""
     try:
-        import torch
-        # Check registry first, then fallback
-        reg_path = os.path.join(_CHECKPOINT_DIR, "registry.json")
-        if os.path.exists(reg_path):
-            with open(reg_path) as f:
-                reg = json.load(f)
-            active_path = reg.get("active", {}).get("path", "")
-            if active_path:
-                if not os.path.isabs(active_path):
-                    active_path = os.path.join(_CHECKPOINT_DIR, active_path)
-                if os.path.exists(active_path):
-                    return True
-        ckpt = os.path.join(_CHECKPOINT_DIR, "yicenet_v15.pt")
-        return os.path.exists(ckpt)
-    except ImportError:
+        import torch  # noqa: F401
+        EngineProvider._resolve_checkpoint()
+        return True
+    except Exception:
         return False
 
 
