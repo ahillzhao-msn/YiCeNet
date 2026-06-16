@@ -11,9 +11,126 @@ YiCeNet 抽象接口層 — 定義 CPU/GPU 自適應的抽象協議。
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
+import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from .types import PredictionResult, Prescription, EnvAnalysis
+
+
+# ── Phase 2: Core component interfaces ────────────────────────────────────────
+
+
+class ITokenizer(ABC):
+    """Replaceable tokenizer. Default: Qwen2.5-0.5B BPE."""
+
+    @abstractmethod
+    def encode(self, text: str, max_len: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (input_ids, attention_mask) on CPU."""
+
+    @abstractmethod
+    def get_vocab_size(self) -> int: ...
+
+    @abstractmethod
+    def download(self, hf_token: str = "") -> bool:
+        """Download model files to local cache. Returns True on success."""
+
+
+class IEncoder(ABC):
+    """Replaceable encoder. Default: TinyEncoder (4-layer Transformer, 256-dim)."""
+
+    @abstractmethod
+    def encode_context(
+        self,
+        input_ids: torch.Tensor,
+        mask: torch.Tensor,
+        env_vec: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Return (1, D) context embedding."""
+
+
+class IRouter(ABC):
+    """Replaceable router. Default: Gumbel-Softmax (τ: 1.0→0.1)."""
+
+    @abstractmethod
+    def divine(
+        self, h: torch.Tensor, tau: float = 1.0, hard: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (hexagram_idx (1,), probs (1, 64))."""
+
+
+class IValueNetwork(ABC):
+    """Replaceable value network. Default: 3-layer MLP (256→128→64→1)."""
+
+    @abstractmethod
+    def score(self, candidate_embeds: torch.Tensor) -> torch.Tensor:
+        """Return Q-values tensor (1, 8, 1)."""
+
+
+class IMemoryBank(ABC):
+    """Injectable short-term memory. Not a global singleton."""
+
+    @abstractmethod
+    def init_session(self, session_id: str) -> None: ...
+
+    @abstractmethod
+    def store_turn(
+        self,
+        session_id: str,
+        turn_id: int,
+        encoder_output: np.ndarray,
+        hexagram_id: int,
+        summary: str = "",
+    ) -> None: ...
+
+    @abstractmethod
+    def get_session_keys(
+        self, session_id: str
+    ) -> tuple[np.ndarray, list[dict]]: ...
+
+    @abstractmethod
+    def get_hexagram_history(self, session_id: str) -> list[int]: ...
+
+    @abstractmethod
+    def get_turn_count(self, session_id: str) -> int: ...
+
+
+class IEngine(ABC):
+    """Inference engine façade (not a God Class)."""
+
+    @abstractmethod
+    def predict(
+        self,
+        task_brief: str,
+        temperature: float = 0.1,
+        deterministic: bool = False,
+        environment: Optional[dict] = None,
+    ) -> "PredictionResult": ...
+
+    @abstractmethod
+    def prescribe(
+        self,
+        task_text: str,
+        session_id: str,
+        turn_id: int = 0,
+        turn_summary: str = "",
+        environment: Optional[dict] = None,
+    ) -> "Prescription": ...
+
+    @abstractmethod
+    def analyze(
+        self,
+        task_brief: str,
+        environment: Optional[dict] = None,
+    ) -> "EnvAnalysis": ...
+
+    @abstractmethod
+    def switch_model(self, checkpoint: str) -> bool: ...
+
+
+# ── Existing interface (unchanged) ────────────────────────────────────────────
 
 
 class ProbeExtractor(ABC):
