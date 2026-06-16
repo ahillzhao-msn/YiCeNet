@@ -44,7 +44,7 @@ def _ensure_vocab():
         return
     map_path = yicenet_data_dir() / "qwen_to_yicenet.json"
     if not map_path.exists():
-        print("[YiCeNet] Building vocabulary from session DB...")
+        print("[YiCeNet] Building vocabulary from session DB...", file=sys.stderr)
         build_vocab()
     _VOCAB_CHECKED = True
 
@@ -185,7 +185,7 @@ class YiCeNetEngine:
         self._active_checkpoint = ckpt
         _device_used = device
         _mem = torch.cuda.memory_allocated() / 1024 / 1024 if torch.cuda.is_available() else 0
-        print(f"[YiCeNet] Loaded {ckpt} on {_device_used} ({_mem:.0f}MB)")
+        print(f"[YiCeNet] Loaded {ckpt} on {_device_used} ({_mem:.0f}MB)", file=sys.stderr)
 
     # ── Hexagram chain signal computation ─────────────────────────────────
 
