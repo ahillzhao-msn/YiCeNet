@@ -217,13 +217,14 @@ class ContextPrescription:
         rx.compression_ratio = compressed / total if total > 0 else 0.0
         
         # --- Key insight (公交站台风格: 简洁、聚焦) ---
+        # Skill doc 约定：焦點: #N, 壓縮比 X%，不出现「輪次」前缀（# 已表意）
         top_turns = rx.retain_turns[:3]
         turns_str = ", ".join(f"#{t}" for t in top_turns)
         if attn_entropy < 0.5:
-            rx.key_insight = f"焦點: 輪次 {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
+            rx.key_insight = f"焦點: {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
         elif attn_entropy > 2.5:
             rx.key_insight = f"發散 ({turns_str} 略高), 壓縮比 {rx.compression_ratio:.0%}"
         else:
-            rx.key_insight = f"焦點: 輪次 {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
+            rx.key_insight = f"焦點: {turns_str}, 壓縮比 {rx.compression_ratio:.0%}"
         
         return rx

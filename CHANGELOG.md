@@ -2,6 +2,83 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [15.5.4] — 2026-06-15
+
+### Fixed
+
+- **cross_attention.py key_insight format** — Removed redundant `輪次` prefix
+  from bus-stop header. Format changed from `焦點: 輪次 #N` to `焦點: #N`
+  (`src/yicenet/cross_attention.py:223`)
+
+### Changed
+
+- **Production deployment default** — `YICENET_HOME` env var should now be
+  **unset** for production use; engine auto-resolves to `~/.yicenet/` on
+  non-editable installs. Source-tree development still uses `YICENET_HOME`.
+
+### Cleanup
+
+- **`~/.yicenet/data/` directory** — Removed misplaced files: `config.yaml`,
+  `SOUL.md`, empty `checkpoints/`, `data/`, `logs/` subdirectories.
+  `flywheel_buffer.jsonl`, `metrics.db`, `qwen_to_yicenet.json` retained at
+  `~/.yicenet/data/`.
+
+## [15.5.3] — 2026-06-15
+
+### Changed
+
+- **Bus-stop hexagram display** — LOOM header now uses compact `〈歷史摘要 |
+  mode | 焦點: #N, 壓縮比 X%〉` format (公交站台风格).
+- **Cross-attention key_insight cleanup** — Unified all three entropy branches
+  (low/medium/high) to use 公交站台 key_insight format; removed entropy value
+  exposure from user-facing header. Single-turn sessions show `焦點: #0, 壓縮比
+  0%` instead of exposing internal entropy.
+- **Claude Code MCP rework** — MCP tools restructured for consistent
+  `predict/attend/feedback/switch` interface.
+- **Runtime config** — `~/.yicenet/config.yaml` now supports `runtime:` section
+  for `transformers_offline`, `hf_hub_offline`, `tqdm_disable`.
+
+## [15.5.2] — 2026-06-15
+
+### Changed
+
+- Release workflow incorporates bootstrap download against GitHub Assets API.
+
+## [15.5.1] — 2026-06-15
+
+### Fixed
+
+- `NameError: sp.run` in `bootstrap.py` — `_remove_crontab` used `sp.run()`
+  without importing `sp`; replaced with `subprocess.run()`.
+
+### Added
+
+- Release workflow now bundles wheel + model checkpoints + install scripts into
+  a single GitHub Release artifact.
+
+## [15.5.0] — 2026-06-15
+
+### Added
+
+- **SOUL template system** — `SOUL-template.md` defines YiCeNet's identity
+  (心·道/骨·法/皮·儒/用·⽤). `~/.yicenet/SOUL.md` created during bootstrap
+  Phase 5. SOUL summary injectable into host system prompt.
+- **Cross-platform flywheel scheduler** — Native OS scheduling via crontab
+  (Linux/macOS) and Task Scheduler (Windows). No longer depends on Hermes cron.
+- **`yicenet-uninstall` CLI** — Clean removal of Hermes plugin, Claude Code MCP,
+  flywheel scheduler. `--clean-data` flag deletes `~/.yicenet/`.
+- **`yicenet-bootstrap` Phase 5** — Creates `~/.yicenet/` with `config.yaml`,
+  `SOUL.md`, and `data/`, `logs/`, `checkpoints/` directories.
+- **Config template `soul:` section** — `DEFAULT_CONFIG_YAML` includes SOUL
+  integration settings (`enabled`, `priority_weights`, `inject_targets`,
+  `injection_level`).
+- **Performance benchmark section in skill doc** — Standardised benchmark with
+  warmup, parameter count, per-version expected CPU latency.
+
+### Fixed
+
+- **Install docs** — `INSTALL.md` updated with full install/uninstall lifecycle.
+
 ## [15.4.0] — 2026-06-15
 
 ### Fixed
