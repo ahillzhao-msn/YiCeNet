@@ -39,15 +39,19 @@ def _get_main_id(result: dict) -> int:
 
 
 def format_prediction(result: dict, mode: str = "compact") -> str:
-    """格式化 YiCeNet 預測結果。
+    """Format YiCeNet prediction result.
 
     Args:
         result: engine.predict() 返回的原始字典
-        mode: "compact" — 精簡（用於 flow chain）
-              "detailed" — 完整（用於回應頭部）
+        mode:   "compact" — 精简（用于 flow chain）
+                "detailed" — 完整（用于回应头部）
 
     Returns:
         格式化字串
+
+    Note:
+        LOOM 调用时显式传入 mode 参数，不读 config。
+        独立运行时可用 get_display_config() 读取用户偏好后传入。
     """
     hid = _get_main_id(result)
     num = hid + 1  # hexagram_number = id + 1
@@ -57,8 +61,8 @@ def format_prediction(result: dict, mode: str = "compact") -> str:
     best_q = max(qs) if qs else 0.0
     candidates = result.get("candidates", [])
 
-    if mode == "compact":
-        # 精簡模式：符號 + 卦名
+    if mode == "compact" or mode == "bus_stop":
+        # 精简模式：符号 + 卦名（bus_stop = compact 的语义别名）
         parts = []
         if symbol:
             parts.append(symbol)
