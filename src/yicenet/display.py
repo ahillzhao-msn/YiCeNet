@@ -22,6 +22,82 @@ HEXAGRAM_SYMBOLS: list[str] = [
 # 卦名（從 yicenet_engine 引入，此處保留備用）
 from yicenet.yicenet_engine import HEXAGRAM_NAMES  # noqa: F401
 
+# 64 卦卦辞（简判，传统《周易》）
+# 每卦 ≤10 字，简短用于 compact 模式的 * 判词
+_HEXAGRAM_JUDGMENTS: list[str] = [
+    "元亨利贞",          # 1 乾
+    "元亨利牝马之贞",    # 2 坤
+    "元亨利贞",          # 3 屯
+    "亨",                # 4 蒙
+    "有孚光亨利贞",      # 5 需
+    "有孚窒惕",          # 6 讼
+    "贞吉",              # 7 师
+    "吉",                # 8 比
+    "亨密云不雨",        # 9 小畜
+    "履虎尾不咥人亨",   # 10 履
+    "小往大来吉亨",      # 11 泰
+    "不利君子贞",        # 12 否
+    "亨",                # 13 同人
+    "元亨",              # 14 大有
+    "亨君子有终",        # 15 谦
+    "利建侯行师",        # 16 豫
+    "元亨利贞",          # 17 随
+    "元亨利涉大川",      # 18 蛊
+    "元亨利贞",          # 19 临
+    "盥而不荐",          # 20 观
+    "亨利用狱",          # 21 噬嗑
+    "亨小利有攸往",      # 22 贲
+    "不利有攸往",        # 23 剥
+    "亨出入无疾",        # 24 复
+    "元亨利贞",          # 25 无妄
+    "利贞",              # 26 大畜
+    "贞吉观颐",          # 27 颐
+    "栋桡利有攸往亨",    # 28 大过
+    "习坎有孚维心亨",    # 29 坎
+    "利贞亨",            # 30 离
+    "亨取女吉",          # 31 咸
+    "亨无咎利贞利有攸往", # 32 恒
+    "亨小利贞",          # 33 遯
+    "利贞",              # 34 大壮
+    "康侯用锡马蕃庶",    # 35 晋
+    "利艰贞",            # 36 明夷
+    "利女贞",            # 37 家人
+    "小事吉",            # 38 睽
+    "利西南不利东北",    # 39 蹇
+    "亨",                # 40 解
+    "有孚元吉无咎",      # 41 损
+    "利有攸往利涉大川",  # 42 益
+    "扬于王庭",          # 43 夬
+    "女壮勿用取女",      # 44 姤
+    "亨王假有庙",        # 45 萃
+    "元亨利贞",          # 46 升
+    "亨贞大人吉",        # 47 困
+    "改邑不改井",        # 48 井
+    "元亨利贞",          # 49 革
+    "元吉亨",            # 50 鼎
+    "亨",                # 51 震
+    "艮其背",            # 52 艮
+    "女归吉利贞",        # 53 渐
+    "征凶无攸利",        # 54 归妹
+    "亨王假之",          # 55 丰
+    "小亨旅贞吉",        # 56 旅
+    "小亨利有攸往",      # 57 巽
+    "亨",                # 58 兑
+    "亨王假有庙",        # 59 涣
+    "亨",                # 60 节
+    "豚鱼吉利涉大川",    # 61 中孚
+    "亨利贞",            # 62 小过
+    "亨小利贞",          # 63 既济
+    "亨小狐汔济",        # 64 未济
+]
+
+
+def hexagram_judgment(hexagram_number: int) -> str:
+    """hexagram_number (1-64) → 卦辞（简判）。"""
+    if 1 <= hexagram_number <= 64:
+        return _HEXAGRAM_JUDGMENTS[hexagram_number - 1]
+    return ""
+
 
 def hexagram_symbol(hexagram_number: int) -> str:
     """hexagram_number (1-64) → Unicode 卦象符號。"""
@@ -62,7 +138,7 @@ def format_prediction(result: dict, mode: str = "compact") -> str:
     candidates = result.get("candidates", [])
 
     if mode == "compact":
-        # 精简模式：[䷳ 艮] — 卦象+卦名，方括号
+        # 精简模式：[䷟ 恒] * 亨无咎利贞 — 卦象+卦名 * 简判
         parts = []
         if symbol:
             parts.append(symbol)
@@ -70,7 +146,11 @@ def format_prediction(result: dict, mode: str = "compact") -> str:
             parts.append(name[:6])
         else:
             parts.append(f"#{num}")
-        return f"[{' '.join(parts)}]"
+        result_str = f"[{' '.join(parts)}]"
+        judgment = hexagram_judgment(num)
+        if judgment:
+            result_str += f" * {judgment}"
+        return result_str
 
     # detailed 模式：完整資訊
     lines = []
