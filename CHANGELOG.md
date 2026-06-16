@@ -22,6 +22,11 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
   `SOUL.md`, empty `checkpoints/`, `data/`, `logs/` subdirectories.
   `flywheel_buffer.jsonl`, `metrics.db`, `qwen_to_yicenet.json` retained at
   `~/.yicenet/data/`.
+- **`checkpoints/` cleanup** — Deleted 3 stale 22MB checkpoints
+  (`yicenet_v15.pt`, `yicenet_v14.pt`, `yicenet_rl_best.pt`). Promoted
+  `yicenet_v18.pt` (avg_reward=0.9903, highest) to active. Simplified
+  `registry.json` to active + fallback only (no history). Now tracked in
+  git for CI release builds.
 
 ## [15.5.3] — 2026-06-15
 
