@@ -116,11 +116,11 @@ runtime:
 
 # ── Display (standalone mode) ──
 # hexagram_chain: 是否显示卦链（跨轮演进序列）
-# mode:           bus_stop (精简) | detailed (含Q值、候选)
+# mode:           compact | detailed
 # LOOM 调用时传入自己的显示参数，不读此配置
 display:
   hexagram_chain: true   # 独立运行时显示卦链
-  mode: bus_stop         # bus_stop | detailed
+  mode: compact          # compact | detailed
 
 # ── SOUL template integration ──
 soul:

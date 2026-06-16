@@ -61,8 +61,8 @@ def format_prediction(result: dict, mode: str = "compact") -> str:
     best_q = max(qs) if qs else 0.0
     candidates = result.get("candidates", [])
 
-    if mode == "compact" or mode == "bus_stop":
-        # 精简模式：符号 + 卦名（bus_stop = compact 的语义别名）
+    if mode == "compact":
+        # 精简模式：[䷳ 艮] — 卦象+卦名，方括号
         parts = []
         if symbol:
             parts.append(symbol)
@@ -70,7 +70,7 @@ def format_prediction(result: dict, mode: str = "compact") -> str:
             parts.append(name[:6])
         else:
             parts.append(f"#{num}")
-        return " ".join(parts)
+        return f"[{' '.join(parts)}]"
 
     # detailed 模式：完整資訊
     lines = []
