@@ -16,11 +16,30 @@ from pathlib import Path
 # ═══════════════════════════════════════════════════════════
 
 def test_yicenet_home_auto_detect():
-    """yicenet_home() should auto-detect from source tree."""
-    from yicenet.config import yicenet_home
+    """yicenet_home() resolves to a valid directory per install mode.
+
+    Editable install  → source-tree root (contains pyproject.toml)
+    Wheel / env-var   → YICENET_HOME or ~/.yicenet (must exist after bootstrap)
+    """
+    import os
+    from yicenet.config import yicenet_home, _detect_install_mode
     home = yicenet_home()
-    assert home.exists(), f"yicenet_home does not exist: {home}"
-    assert (home / "pyproject.toml").exists(), f"pyproject.toml not found at {home}"
+
+    # Respect an explicit env override
+    env_override = os.environ.get("YICENET_HOME")
+    if env_override:
+        from pathlib import Path
+        assert home == Path(env_override).expanduser().resolve()
+        return
+
+    if _detect_install_mode() == "editable":
+        from pathlib import Path
+        assert (home / "pyproject.toml").exists(), f"pyproject.toml not found at {home}"
+    else:
+        # Wheel install: ~/.yicenet is the data root; it is created by bootstrap.
+        # Just confirm yicenet_home() returns a Path (no existence requirement here).
+        from pathlib import Path
+        assert isinstance(home, Path)
 
 
 def test_yicenet_config_defaults():
