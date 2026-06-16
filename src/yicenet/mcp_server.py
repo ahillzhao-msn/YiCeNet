@@ -70,7 +70,7 @@ def _get_engine():
 
 
 @mcp.tool()
-def yicenet_attend(
+async def yicenet_attend(
     task_text: str,
     session_id: str,
     turn_id: int = 0,
@@ -98,19 +98,24 @@ def yicenet_attend(
                  correction_rate, satisfaction_ema, attention_entropy,
                  last_tool_success (bool).
     """
-    engine = _get_engine()
-    result = engine.attend(
-        task_text,
-        session_id=session_id,
-        turn_id=turn_id,
-        turn_summary=turn_summary,
-        environment=environment,
-    )
-    return result.get("context_prescription", result)
+    import anyio
+
+    def _run():
+        engine = _get_engine()
+        result = engine.attend(
+            task_text,
+            session_id=session_id,
+            turn_id=turn_id,
+            turn_summary=turn_summary,
+            environment=environment,
+        )
+        return result.get("context_prescription", result)
+
+    return await anyio.to_thread.run_sync(_run)
 
 
 @mcp.tool()
-def yicenet_predict(
+async def yicenet_predict(
     task_brief: str,
     session_id: str = "",
     temperature: float = 0.1,
@@ -155,21 +160,26 @@ def yicenet_predict(
         context_status (str): "sufficient" | "partial" | "thin"
         context_hint (str): suggestion for improving confidence (absent when sufficient)
     """
-    engine = _get_engine()
-    return engine.predict(
-        task_brief,
-        temperature=temperature,
-        deterministic=deterministic,
-        return_prescription=bool(session_id),
-        session_id=session_id,
-        turn_id=turn_id,
-        turn_summary="",
-        environment=environment,
-    )
+    import anyio
+
+    def _run():
+        engine = _get_engine()
+        return engine.predict(
+            task_brief,
+            temperature=temperature,
+            deterministic=deterministic,
+            return_prescription=bool(session_id),
+            session_id=session_id,
+            turn_id=turn_id,
+            turn_summary="",
+            environment=environment,
+        )
+
+    return await anyio.to_thread.run_sync(_run)
 
 
 @mcp.tool()
-def yicenet_feedback(
+async def yicenet_feedback(
     session_id: str,
     event: str,
     token_cost: int = 0,
@@ -192,27 +202,31 @@ def yicenet_feedback(
     if event not in valid_events:
         return {"error": f"event must be one of {sorted(valid_events)}"}
 
+    import anyio
     from yicenet.flywheel import submit_trajectory
 
-    submit_trajectory({
-        "producer": "claude-code",
-        "version": 1,
-        "conversation_id": session_id,
-        "trajectory": {
-            "continued": event == "continued",
-            "corrected": event == "corrected",
-            "completed": event == "completed",
-            "praised": event == "praised",
-            "abandoned": event == "abandoned",
-            "token_cost": token_cost,
-            "token_efficiency": 0.0,
-        },
-    })
-    return {"ok": True, "session_id": session_id, "event": event}
+    def _run():
+        submit_trajectory({
+            "producer": "claude-code",
+            "version": 1,
+            "conversation_id": session_id,
+            "trajectory": {
+                "continued": event == "continued",
+                "corrected": event == "corrected",
+                "completed": event == "completed",
+                "praised": event == "praised",
+                "abandoned": event == "abandoned",
+                "token_cost": token_cost,
+                "token_efficiency": 0.0,
+            },
+        })
+        return {"ok": True, "session_id": session_id, "event": event}
+
+    return await anyio.to_thread.run_sync(_run)
 
 
 @mcp.tool()
-def yicenet_switch(checkpoint: str) -> dict:
+async def yicenet_switch(checkpoint: str) -> dict:
     """
     Hot-swap YiCeNet to a different checkpoint without restarting the server.
 
@@ -220,9 +234,14 @@ def yicenet_switch(checkpoint: str) -> dict:
                 relative to the checkpoints/ directory.
     Used for A/B model comparison after the flywheel auto-trains a new version.
     """
-    engine = _get_engine()
-    success = engine.switch_model(checkpoint)
-    return {"success": success, "active": checkpoint}
+    import anyio
+
+    def _run():
+        engine = _get_engine()
+        success = engine.switch_model(checkpoint)
+        return {"success": success, "active": checkpoint}
+
+    return await anyio.to_thread.run_sync(_run)
 
 
 @mcp.resource("registry://active")
@@ -247,6 +266,18 @@ def main() -> None:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
     if rt.get("tqdm_disable", True):
         os.environ.setdefault("TQDM_DISABLE", "1")
+
+    # Pre-warm heavy imports in the main thread BEFORE starting the asyncio event
+    # loop.  FastMCP's stdio transport puts stdout/stdin into IOCP async mode on
+    # Windows; any `import` executed inside a to_thread.run_sync worker thread
+    # after that point can deadlock trying to write progress output to the IOCP
+    # pipe.  Pre-importing here avoids the issue entirely.
+    try:
+        from transformers import AutoTokenizer as _  # noqa: F401
+        from yicenet.yicenet_engine import YiCeNetEngine as _  # noqa: F401
+    except Exception:
+        pass
+
     mcp.run()
 
 
