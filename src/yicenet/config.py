@@ -114,13 +114,18 @@ runtime:
   hf_hub_offline: true         # Same for huggingface_hub
   tqdm_disable: true           # Suppress progress bars (MCP server / Hermes plugin)
 
-# ── Display (standalone mode) ──
-# hexagram_chain: 是否显示卦链（跨轮演进序列）
-# mode:           compact | detailed
-# LOOM 调用时传入自己的显示参数，不读此配置
+# ── Display ──
+# mode:             compact  — [䷟ 恒] * 亨无咎利贞  (default)
+#                   detailed — multi-line with Q-values, candidates, hint
+#                   json     — structured JSON for machine consumers
+#                   silent   — no output (testing)
+# hexagram_chain:   prepend turn-history prefix when session_id is provided
+#                   requires hooks to supply chain argument; default false
+# unicode_symbols:  true | false; absent = auto-detect from terminal encoding
 display:
-  hexagram_chain: true   # 独立运行时显示卦链
-  mode: compact          # compact | detailed
+  mode: compact
+  hexagram_chain: false
+  # unicode_symbols: true   # uncomment to force; default = auto-detect
 
 # ── SOUL template integration ──
 soul:
@@ -204,17 +209,21 @@ def get_config() -> "YiCeNetConfig":
 
 
 def get_display_config() -> dict:
-    """Return display settings from ~/.yicenet/config.yaml.
+    """Return display settings from ~/.yicenet/config.yaml as DisplayConfig.
 
-    Returns:
-        {"hexagram_chain": bool, "mode": "bus_stop"|"detailed"}
+    Returns a dict compatible with DisplayConfig TypedDict.
+    unicode_symbols is absent when not set in config (→ auto-detect at render time).
     """
     user = load_user_config()
     disp = user.get("display", {})
-    return {
-        "hexagram_chain": disp.get("hexagram_chain", True),
-        "mode": disp.get("mode", "bus_stop"),
+    cfg: dict = {
+        "mode": disp.get("mode", "compact"),
+        "hexagram_chain": bool(disp.get("hexagram_chain", False)),
     }
+    # Only include unicode_symbols if explicitly set; absent → auto-detect
+    if "unicode_symbols" in disp:
+        cfg["unicode_symbols"] = bool(disp["unicode_symbols"])
+    return cfg
 
 
 @dataclass

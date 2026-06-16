@@ -130,6 +130,45 @@ class IEngine(ABC):
     def switch_model(self, checkpoint: str) -> bool: ...
 
 
+class IDisplay(ABC):
+    """Pluggable display renderer. Injected via ProviderRegistry.display.
+
+    Separates *what* to render (callers supply result + optional chain)
+    from *how* to render (implementation decides mode, encoding, format).
+
+    Implementations:
+        TerminalDisplay — human-readable compact/detailed for terminals/prompts
+        JsonDisplay     — structured JSON for machine consumers (hook injection)
+        SilentDisplay   — no-op for testing
+    """
+
+    @property
+    def needs_chain(self) -> bool:
+        """True if this renderer will use chain history passed to render()."""
+        return False
+
+    @abstractmethod
+    def render(
+        self,
+        result: "PredictionResult",
+        chain: "list[int] | None" = None,
+    ) -> str:
+        """Render a prediction result to string.
+
+        chain: optional hexagram_ids (0-indexed) from MemoryBank.get_hexagram_history().
+               Implementations may ignore it (JsonDisplay, SilentDisplay).
+               TerminalDisplay uses it only when hexagram_chain=True in config.
+        """
+
+    @abstractmethod
+    def render_chain(self, hexagram_ids: list[int]) -> str:
+        """Render chain history standalone.
+
+        hexagram_ids: 0-indexed list from MemoryBank.get_hexagram_history().
+        Returns a string representation of the chain (e.g. "乾→屯→恒").
+        """
+
+
 # ── Existing interface (unchanged) ────────────────────────────────────────────
 
 

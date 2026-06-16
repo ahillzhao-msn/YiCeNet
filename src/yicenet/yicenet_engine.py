@@ -22,7 +22,11 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .types import PredictionResult, EnvAnalysis
+    from .cross_attention import Prescription
 
 import torch
 import torch.nn.functional as F
@@ -264,12 +268,12 @@ class YiCeNetEngine:
         text: str,
         temperature: float = 0.1,
         deterministic: bool = False,
-        return_prescription: bool = False,
+        return_prescription: bool = False,  # deprecated: use prescribe() separately
         session_id: str = "",
         turn_id: int = 0,
         turn_summary: str = "",
         environment: Optional[dict] = None,
-    ) -> dict:
+    ) -> "PredictionResult":
         """
         Run full inference: encode → divine → evaluate → act.
 
@@ -529,7 +533,7 @@ class YiCeNetEngine:
         turn_summary: str = "",
         embedding: Optional[np.ndarray] = None,
         environment: Optional[dict] = None,
-    ) -> dict:
+    ) -> dict:  # returns {"context_prescription": dict}; use prescribe() for Prescription
         """Lightweight encode + store + cross-attention. No hexagram overhead.
 
         ~3ms with TinyEncoder; ~2ms with external bge-small embedding.
@@ -624,25 +628,36 @@ class YiCeNetEngine:
         turn_id: int = 0,
         turn_summary: str = "",
         environment: Optional[dict] = None,
-    ) -> dict:
+    ) -> "Prescription":
         """Context prescription: encode + memory store + cross-attention.
 
-        Clean replacement for attend(). Same logic, clearer name aligned with
-        the IEngine interface. Returns the Prescription as a dict.
+        Returns a Prescription dataclass (not a dict), so callers can access
+        .retain_turns, .summarize_turns, .discard_turns, .mode, etc. directly.
+        Use attend() if you need the raw dict form for JSON serialization.
         """
-        return self.attend(
+        from .cross_attention import Prescription
+        raw = self.attend(
             task_text,
             session_id=session_id,
             turn_id=turn_id,
             turn_summary=turn_summary,
             environment=environment,
         ).get("context_prescription", {})
+        return Prescription(
+            retain_turns=raw.get("retain_turns", []),
+            summarize_turns=raw.get("summarize_turns", []),
+            discard_turns=raw.get("discard_turns", []),
+            mode=raw.get("mode", "compress"),
+            attention_entropy=float(raw.get("attention_entropy", 0.0)),
+            compression_ratio=float(raw.get("compression_ratio", 0.0)),
+            key_insight=raw.get("key_insight", ""),
+        )
 
     def analyze(
         self,
         task_brief: str,
         environment: Optional[dict] = None,
-    ) -> dict:
+    ) -> "EnvAnalysis":
         """Fast environment analysis (~3ms): encode + probes only, no routing.
 
         Returns EnvAnalysis-shaped dict with probes, env_confidence,
