@@ -3,505 +3,198 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>YiCeNet 易策网络 — 代码级架构</title>
+<title>YiCeNet v15.6.1 — 系统架构图</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#020617;color:#e2e8f0;font-family:'JetBrains Mono',monospace;padding:20px}
-h1{font-size:20px;font-weight:700;color:#f1f5f9;margin-bottom:4px}
-.subtitle{font-size:11px;color:#64748b;margin-bottom:24px}
-.diagram{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:30px;margin-bottom:20px;overflow:auto}
-svg{display:block;margin:0 auto;font-family:'JetBrains Mono',monospace}
-text{font-family:'JetBrains Mono',monospace}
-.card-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
-.card{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px}
-.card-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
-.card-dot{width:8px;height:8px;border-radius:50%}
-.card h3{font-size:11px;font-weight:600;color:#e2e8f0}
-.card ul{list-style:none;padding:0}
-.card li{font-size:9px;color:#94a3b8;padding:2px 0;line-height:1.6}
-.card li b{color:#e2e8f0}
-.footer{font-size:9px;color:#475569;text-align:center;border-top:1px solid #1e293b;padding-top:12px}
-.tag{display:inline-block;font-size:7px;padding:1px 4px;border-radius:3px;margin-left:4px}
-.tag-cyan{background:#083344;color:#22d3ee;border:1px solid rgba(34,211,238,.3)}
-.tag-emerald{background:#064e3b;color:#34d399;border:1px solid rgba(52,211,153,.3)}
-.tag-violet{background:#1e1b4b;color:#a78bfa;border:1px solid rgba(167,139,250,.3)}
-.tag-amber{background:#451a03;color:#fbbf24;border:1px solid rgba(251,191,36,.3)}
-.tag-rose{background:#4c0519;color:#fb7185;border:1px solid rgba(251,113,133,.3)}
-.tag-sky{background:#082f49;color:#38bdf8;border:1px solid rgba(56,189,248,.3)}
+body{background:#0d1117;color:#e6edf3;font-family:'Inter','Noto Sans SC',sans-serif;padding:30px}
+h1{font-size:24px;margin-bottom:6px}
+.sub{color:#8b949e;font-size:13px;margin-bottom:24px}
+svg{background:#161b22;border-radius:12px;border:1px solid #30363d;width:100%;max-width:1300px;display:block;margin:0 auto}
+text{font-family:'Inter','Noto Sans SC',sans-serif;font-size:11px;fill:#e6edf3}
+.title-text{font-size:13px;font-weight:600}
+.section-title{font-size:11px;font-weight:600;fill:#58a6ff}
+.sub-text{font-size:9px;fill:#8b949e}
+.badge{fill:#238636}
+.badge-text{font-size:8px;fill:#fff}
+.arrow{stroke:#8b949e;stroke-width:1.5;fill:none}
+.arrow-accent{stroke:#58a6ff;stroke-width:1.5;fill:none}
+.box{fill:#1c2128;stroke:#30363d;stroke-width:1;rx:6}
+.box-accent{fill:#0d4194;stroke:#58a6ff;stroke-width:1;rx:6}
+.box-green{fill:#0e4429;stroke:#3fb950;stroke-width:1;rx:6}
 </style>
 </head>
 <body>
-
-<h1>⏺ YiCeNet 易策网络 — 代码级架构</h1>
-<div class="subtitle">v15.6.0 · ~5.67M parameters · ~22MB FP32 · ~7ms inference</div>
-
-<div class="diagram">
-<svg width="1200" height="1950" viewBox="0 0 1200 1950">
-
-  <!-- Background Grid -->
-  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
-  </pattern>
-  <rect width="1200" height="1950" fill="url(#grid)"/>
-
-  <!-- Arrowhead definitions -->
-  <defs>
-    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#22d3ee"/>
-    </marker>
-    <marker id="arrow-emerald" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#34d399"/>
-    </marker>
-    <marker id="arrow-violet" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#a78bfa"/>
-    </marker>
-    <marker id="arrow-amber" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#fbbf24"/>
-    </marker>
-    <marker id="arrow-rose" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#fb7185"/>
-    </marker>
-    <marker id="arrow-slate" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#64748b"/>
-    </marker>
-  </defs>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Three-Layer Architecture -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="10" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="36" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Three Session-Turn Layers (三層架構)</text>
-  <text x="600" y="50" text-anchor="middle" fill="#64748b" font-size="9">yiCeNetEngine.predict() · attend() · MemoryBank · CrossAttention · ContextPrescription</text>
-
-  <!-- Layer T1: Turn -->
-  <rect x="30" y="75" width="370" height="105" rx="6" fill="rgba(8,51,68,0.3)" stroke="#22d3ee" stroke-width="1.5"/>
-  <text x="215" y="95" text-anchor="middle" fill="#22d3ee" font-weight="700" font-size="11">Layer T1: Turn (單輪預測)</text>
-  <text x="215" y="110" text-anchor="middle" fill="#64748b" font-size="8">yicenet_engine.py:YiCeNetEngine.predict()</text>
-  <text x="45" y="128" fill="#94a3b8" font-size="8">• encode(text) → (1,128) input_ids, (1,128) mask</text>
-  <text x="45" y="142" fill="#94a3b8" font-size="8">• model.forward() → hexagram_idx(1,), probs(1,64), probes(9,)</text>
-  <text x="45" y="156" fill="#94a3b8" font-size="8">• router → Gumbel-Softmax(argmax) → best_hex_id, q_values</text>
-  <text x="45" y="170" fill="#94a3b8" font-size="8">• action_decoder → action_id(1,) from 50 primitives</text>
-
-  <!-- Layer T2: Session -->
-  <rect x="415" y="75" width="370" height="105" rx="6" fill="rgba(6,78,59,0.3)" stroke="#34d399" stroke-width="1.5"/>
-  <text x="600" y="95" text-anchor="middle" fill="#34d399" font-weight="700" font-size="11">Layer T2: Session (會話內演進)</text>
-  <text x="600" y="110" text-anchor="middle" fill="#64748b" font-size="8">memory_bank.py:MemoryBank + env_context.py</text>
-  <text x="430" y="128" fill="#94a3b8" font-size="8">• MemoryBank stores {session_id → TurnRecord[]} per session</text>
-  <text x="430" y="142" fill="#94a3b8" font-size="8">• _compute_chain_signals(): hexagram_stability, velocity, entropy</text>
-  <text x="430" y="156" fill="#94a3b8" font-size="8">• build_env_vec() → 16-dim env_vec (slots: hour, turn#, hex-jump, etc.)</text>
-  <text x="430" y="170" fill="#94a3b8" font-size="8">• env_projector(16→256) → residual added to encoder output h</text>
-
-  <!-- Layer T3: Conversation -->
-  <rect x="800" y="75" width="370" height="105" rx="6" fill="rgba(76,29,149,0.3)" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="985" y="95" text-anchor="middle" fill="#a78bfa" font-weight="700" font-size="11">Layer T3: Conversation (跨輪記憶)</text>
-  <text x="985" y="110" text-anchor="middle" fill="#64748b" font-size="8">cross_attention.py:CrossAttention + ContextPrescription</text>
-  <text x="815" y="128" fill="#94a3b8" font-size="8">• CrossAttention.compute(query, keys) → numpy q·Kᵀ/√d softmax</text>
-  <text x="815" y="142" fill="#94a3b8" font-size="8">• ContextPrescription.generate() → retain/summarize/discard</text>
-  <text x="815" y="156" fill="#94a3b8" font-size="8">• key_insight: focus detection + compression ratio</text>
-  <text x="815" y="170" fill="#94a3b8" font-size="8">• attention_entropy → mode: expand(>2.5) | compress(≤2.5)</text>
-
-  <!-- Vertical arrows between layers -->
-  <line x1="215" y1="180" x2="215" y2="200" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
-  <line x1="600" y1="180" x2="600" y2="200" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
-  <line x1="985" y1="180" x2="985" y2="200" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-violet)"/>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Inference Pipeline (left column) -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="220" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="246" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Inference Pipeline — 完整调用链与张量维度</text>
-  <text x="600" y="260" text-anchor="middle" fill="#64748b" font-size="9">predict(text, temperature, deterministic, session_id, environment) → dict</text>
-
-  <!-- Step 1: Input + Tokenizer -->
-  <rect x="30" y="285" width="1140" height="75" rx="6" fill="rgba(8,51,68,0.25)" stroke="#22d3ee" stroke-width="1"/>
-  <text x="45" y="305" fill="#22d3ee" font-weight="700" font-size="9">① tokenizer.encode(text, max_len=128)</text>
-  <text x="45" y="320" fill="#94a3b8" font-size="8">text → Qwen2.5-0.5B BPE tokenizer → Qwen IDs → _load_vocab_map() rebucket → YiCeNet IDs (8000 vocab, 0=PAD, 1=UNK)</text>
-
-  <rect x="30" y="340" width="260" height="16" rx="3" fill="#083344" stroke="rgba(34,211,238,.3)" stroke-width=".5"/>
-  <text x="160" y="352" text-anchor="middle" fill="#22d3ee" font-size="7">input_ids: (1, 128) long</text>
-
-  <rect x="300" y="340" width="160" height="16" rx="3" fill="#083344" stroke="rgba(34,211,238,.3)" stroke-width=".5"/>
-  <text x="380" y="352" text-anchor="middle" fill="#22d3ee" font-size="7">mask: (1, 128) long</text>
-
-  <rect x="470" y="340" width="200" height="16" rx="3" fill="#083344" stroke="rgba(34,211,238,.3)" stroke-width=".5"/>
-  <text x="570" y="352" text-anchor="middle" fill="#22d3ee" font-size="7">env_vec: (16,) | None</text>
-
-  <text x="690" y="316" fill="#475569" font-size="7">tokenizer.py:94-97 | _get_qwen_tokenizer():AutoTokenizer.from_pretrained(local_dir)</text>
-
-  <line x1="600" y1="360" x2="600" y2="375" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
-
-  <!-- Step 2: Encoder -->
-  <rect x="30" y="375" width="1140" height="70" rx="6" fill="rgba(8,51,68,0.25)" stroke="#22d3ee" stroke-width="1"/>
-  <text x="45" y="395" fill="#22d3ee" font-weight="700" font-size="9">② model.encode_context(input_ids, mask, env_vec)</text>
-  <text x="45" y="410" fill="#94a3b8" font-size="8">TinyEncoder: Embedding(8000→256) + 4× Pre-LN TransformerBlock(256→256, 4 heads, FFN 1024) + MeanPool + TanhProj</text>
-  <text x="45" y="424" fill="#94a3b8" font-size="8">Residual: if env_vec → h += env_projector(env_vec)   # zero-init, backward-compat</text>
-
-  <rect x="30" y="430" width="200" height="14" rx="3" fill="#083344" stroke="rgba(34,211,238,.3)" stroke-width=".5"/>
-  <text x="130" y="441" text-anchor="middle" fill="#22d3ee" font-size="7">h: (1, 256) float32</text>
-
-  <text x="690" y="406" fill="#475569" font-size="7">encoder.py:90-110 | model.py:114-125 encode_context()</text>
-
-  <line x1="130" y1="448" x2="130" y2="465" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
-
-  <!-- Step 3: Router (fork: deterministic vs stochastic) -->
-  <rect x="30" y="465" width="1140" height="90" rx="6" fill="rgba(6,78,59,0.25)" stroke="#34d399" stroke-width="1"/>
-  <text x="45" y="485" fill="#34d399" font-weight="700" font-size="9">③ GumbelRouter.divine(h, τ) — 路由决定</text>
-
-  <rect x="45" y="495" width="500" height="25" rx="4" fill="rgba(6,78,59,0.2)" stroke="#34d399" stroke-width=".5"/>
-  <text x="295" y="512" text-anchor="middle" fill="#34d399" font-size="8">deterministic=True: router_logits→argmax→hex_idx    (bypass Gumbel noise)</text>
-
-  <rect x="45" y="522" width="500" height="25" rx="4" fill="rgba(6,78,59,0.2)" stroke="#34d399" stroke-width=".5"/>
-  <text x="295" y="539" text-anchor="middle" fill="#34d399" font-size="8">stochastic: router_logits→Gumbel-Softmax(τ=1.0→0.1, hard)→hex_idx</text>
-
-  <rect x="560" y="497" width="140" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="630" y="509" text-anchor="middle" fill="#34d399" font-size="7">hex_idx: (1,)</text>
-
-  <rect x="710" y="497" width="160" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="790" y="509" text-anchor="middle" fill="#34d399" font-size="7">hex_probs: (1, 64)</text>
-
-  <rect x="560" y="522" width="200" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="660" y="534" text-anchor="middle" fill="#34d399" font-size="7">router_logits: (1, 64)</text>
-
-  <text x="690" y="478" fill="#475569" font-size="7">model.py:44-70 GumbelRouter | yicenet_engine.py:186-196</text>
-
-  <line x1="130" y1="558" x2="130" y2="575" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow-emerald)"/>
-
-  <!-- Step 4: Candidate Evaluation -->
-  <rect x="30" y="575" width="1140" height="85" rx="6" fill="rgba(76,29,149,0.25)" stroke="#a78bfa" stroke-width="1"/>
-  <text x="45" y="595" fill="#a78bfa" font-weight="700" font-size="9">④ evaluate_candidates(hex_idx, h) — 候选评估 + 值网络打分</text>
-
-  <rect x="45" y="605" width="340" height="22" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="215" y="620" text-anchor="middle" fill="#a78bfa" font-size="7">Trigram CrossAttn → line_attn: (1,6)</text>
-
-  <rect x="395" y="605" width="340" height="22" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="565" y="620" text-anchor="middle" fill="#a78bfa" font-size="7">generate_candidates → cand_idxs: (1, 8)</text>
-
-  <rect x="745" y="605" width="340" height="22" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="915" y="620" text-anchor="middle" fill="#a78bfa" font-size="7">ValueNetwork(256→128→64→1) → cand_values: (1, 8)</text>
-
-  <text x="45" y="640" fill="#94a3b8" font-size="8">candidates: [0=本卦, 1=错卦, 2=综卦, 3=互卦, 4-7=之卦]   best = cand_values.argmax()</text>
-
-  <text x="690" y="596" fill="#475569" font-size="7">hexagram.py:42-70 | model.py:180-210 evaluate_candidates() | value_net.py:20-35</text>
-
-  <line x1="130" y1="663" x2="130" y2="680" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow-violet)"/>
-
-  <!-- Step 5: Action Decoder -->
-  <rect x="30" y="680" width="1140" height="70" rx="6" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width="1"/>
-  <text x="45" y="700" fill="#fbbf24" font-weight="700" font-size="9">⑤ decode_action(best_hex_id) — 动作解码</text>
-  <text x="45" y="715" fill="#94a3b8" font-size="8">ActionDecoder: best_hex_embed(256) → LayerNorm → Linear(256→50) → clamp(-20,20) → argmax → action_id</text>
-
-  <rect x="30" y="730" width="200" height="14" rx="3" fill="#451a03" stroke="rgba(251,191,36,.3)" stroke-width=".5"/>
-  <text x="130" y="741" text-anchor="middle" fill="#fbbf24" font-size="7">action_id: (1,)</text>
-
-  <rect x="245" y="730" width="200" height="14" rx="3" fill="#451a03" stroke="rgba(251,191,36,.3)" stroke-width=".5"/>
-  <text x="345" y="741" text-anchor="middle" fill="#fbbf24" font-size="7">action_logits: (1, 50)</text>
-
-  <text x="690" y="702" fill="#475569" font-size="7">decoder.py:35-55 ActionDecoder | model.py:216-230 decode_action()</text>
-
-  <line x1="130" y1="753" x2="130" y2="770" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
-
-  <!-- Step 6: Probes + env_confidence -->
-  <rect x="30" y="770" width="1140" height="70" rx="6" fill="rgba(136,19,55,0.25)" stroke="#fb7185" stroke-width="1"/>
-  <text x="45" y="790" fill="#fb7185" font-weight="700" font-size="9">⑥ extract_probes(h, router_logits, probs, cand_values, hex_idx, prev_hex, action_logits)</text>
-
-  <rect x="45" y="802" width="460" height="22" rx="3" fill="rgba(136,19,55,0.15)" stroke="rgba(251,113,133,.3)" stroke-width=".5"/>
-  <text x="275" y="817" text-anchor="middle" fill="#fb7185" font-size="7">probes: (9,) → [h_norm, h_ent, logit_ent, clan_upper, clan_lower, clan_opp, q_gap, jump_dist, action_conf]</text>
-
-  <rect x="520" y="802" width="280" height="22" rx="3" fill="rgba(136,19,55,0.15)" stroke="rgba(251,113,133,.3)" stroke-width=".5"/>
-  <text x="660" y="817" text-anchor="middle" fill="#fb7185" font-size="7">compute_env_confidence() → (confidence, status, hint)</text>
-
-  <text x="690" y="793" fill="#475569" font-size="7">probes.py:45-80 extract_probes_tensor() | env_context.py:72-95 compute_env_confidence()</text>
-
-  <line x1="130" y1="843" x2="130" y2="860" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrow-rose)"/>
-
-  <!-- Step 7: Return dict -->
-  <rect x="30" y="860" width="1140" height="55" rx="6" fill="rgba(30,41,59,0.25)" stroke="#64748b" stroke-width="1"/>
-  <text x="45" y="880" fill="#94a3b8" font-weight="700" font-size="9">⑦ Return dict → yicenet_predict() result</text>
-  <text x="45" y="895" fill="#64748b" font-size="8">hexagram_id, hexagram_name, hexagram_number, hexagram_pattern(6-bit), selected_hexagram_id/name, candidates[8], action_id/name, q_values[8], probes[9], env_confidence, context_status, context_hint</text>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Context Prescription (右侧流向) -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="935" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="961" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Context Prescription (上下文处方) — session 模式</text>
-  <text x="600" y="975" text-anchor="middle" fill="#64748b" font-size="9">predict(return_prescription=True, session_id) | attend()</text>
-
-  <!-- Prescription Pipeline -->
-  <rect x="30" y="995" width="1140" height="90" rx="6" fill="rgba(76,29,149,0.2)" stroke="#a78bfa" stroke-width="1"/>
-
-  <rect x="45" y="1005" width="220" height="18" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="155" y="1018" text-anchor="middle" fill="#a78bfa" font-size="7">MemoryBank.store_turn()</text>
-
-  <line x1="265" y1="1014" x2="295" y2="1014" stroke="#a78bfa" stroke-width=".8" marker-end="url(#arrow-violet)"/>
-
-  <rect x="300" y="1005" width="300" height="18" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="450" y="1018" text-anchor="middle" fill="#a78bfa" font-size="7">CrossAttention.compute(query, past_keys) → weights(N,) float64</text>
-
-  <line x1="600" y1="1014" x2="630" y2="1014" stroke="#a78bfa" stroke-width=".8" marker-end="url(#arrow-violet)"/>
-
-  <rect x="635" y="1005" width="260" height="18" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="765" y="1018" text-anchor="middle" fill="#a78bfa" font-size="7">ContextPrescription.generate()</text>
-
-  <line x1="895" y1="1014" x2="925" y2="1014" stroke="#a78bfa" stroke-width=".8" marker-end="url(#arrow-violet)"/>
-
-  <rect x="930" y="1005" width="220" height="18" rx="3" fill="rgba(76,29,149,0.15)" stroke="rgba(167,139,250,.3)" stroke-width=".5"/>
-  <text x="1040" y="1018" text-anchor="middle" fill="#a78bfa" font-size="7">Prescription dict → caller</text>
-
-  <text x="45" y="1040" fill="#94a3b8" font-size="8">Prescription = {retain_turns, summarize_turns, discard_turns, mode, attention_entropy, compression_ratio, key_insight}</text>
-  <text x="45" y="1054" fill="#94a3b8" font-size="8">threshold_high = mean(weights)+std(weights) → retain  |  threshold_low = max(0, mean-0.5×std) → discard</text>
-  <text x="45" y="1068" fill="#94a3b8" font-size="8">attention_entropy > 2.5 → mode=expand  |  ≤ 2.5 → mode=compress  |  key_insight = 焦點: #N (+发散 detection)</text>
-
-  <text x="690" y="1034" fill="#475569" font-size="7">cross_attention.py:40-90 | yicenet_engine.py:240-270</text>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Hexagram Candidate Generation -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="1105" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="1131" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Hexagram Reasoning Structure (卦象推理结构)</text>
-  <text x="600" y="1145" text-anchor="middle" fill="#64748b" font-size="9">GumbelRouter → 8 candidates → ValueNetwork scoring → ActionDecoder</text>
-
-  <!-- 8 candidate boxes -->
-  <rect x="30" y="1170" width="130" height="55" rx="4" fill="rgba(8,51,68,0.3)" stroke="#22d3ee" stroke-width="1"/>
-  <text x="95" y="1190" text-anchor="middle" fill="#22d3ee" font-size="10" font-weight="700">本卦</text>
-  <text x="95" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">original</text>
-  <text x="95" y="1216" text-anchor="middle" fill="#64748b" font-size="7">identity(h_idx)</text>
-
-  <rect x="180" y="1170" width="130" height="55" rx="4" fill="rgba(6,78,59,0.3)" stroke="#34d399" stroke-width="1"/>
-  <text x="245" y="1190" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">错卦</text>
-  <text x="245" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">opposite</text>
-  <text x="245" y="1216" text-anchor="middle" fill="#64748b" font-size="7">bitwise NOT h_idx</text>
-
-  <rect x="330" y="1170" width="130" height="55" rx="4" fill="rgba(6,78,59,0.3)" stroke="#34d399" stroke-width="1"/>
-  <text x="395" y="1190" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">综卦</text>
-  <text x="395" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">upside-down</text>
-  <text x="395" y="1216" text-anchor="middle" fill="#64748b" font-size="7">reverse 6 lines</text>
-
-  <rect x="480" y="1170" width="130" height="55" rx="4" fill="rgba(6,78,59,0.3)" stroke="#34d399" stroke-width="1"/>
-  <text x="545" y="1190" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">互卦</text>
-  <text x="545" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">inner trigrams</text>
-  <text x="545" y="1216" text-anchor="middle" fill="#64748b" font-size="7">lines 2,3,4 & 3,4,5</text>
-
-  <rect x="630" y="1170" width="110" height="55" rx="4" fill="rgba(76,29,149,0.3)" stroke="#a78bfa" stroke-width="1"/>
-  <text x="685" y="1190" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="700">之卦×4</text>
-  <text x="685" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">changing</text>
-  <text x="685" y="1216" text-anchor="middle" fill="#64748b" font-size="7">flip 1 line each</text>
-
-  <rect x="760" y="1170" width="200" height="55" rx="4" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1"/>
-  <text x="860" y="1190" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="700">ValueNetwork</text>
-  <text x="860" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">3-layer MLP</text>
-  <text x="860" y="1216" text-anchor="middle" fill="#64748b" font-size="7">(B,8,256)→(B,8,1)</text>
-
-  <rect x="980" y="1170" width="170" height="55" rx="4" fill="rgba(136,19,55,0.3)" stroke="#fb7185" stroke-width="1"/>
-  <text x="1065" y="1190" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="700">ActionDecoder</text>
-  <text x="1065" y="1203" text-anchor="middle" fill="#94a3b8" font-size="8">50 primitives</text>
-  <text x="1065" y="1216" text-anchor="middle" fill="#64748b" font-size="7">Linear(256→50)</text>
-
-  <text x="600" y="1250" text-anchor="middle" fill="#475569" font-size="7">hexagram.py:1-80  generate_candidates() | value_net.py:20-35 | decoder.py:35-55</text>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: 16-dim Environment Vector -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="1280" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="1306" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Environment Vector (16维环境向量) — env_context.py</text>
-
-  <rect x="30" y="1340" width="1140" height="145" rx="6" fill="rgba(6,78,59,0.2)" stroke="#34d399" stroke-width="1"/>
-
-  <!-- Slot row 1 -->
-  <rect x="45" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="95" y="1362" text-anchor="middle" fill="#34d399" font-size="7">0-1: hour</text>
-  <rect x="155" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="205" y="1362" text-anchor="middle" fill="#34d399" font-size="7">2-3: dow</text>
-  <rect x="265" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="315" y="1362" text-anchor="middle" fill="#34d399" font-size="7">4: turn#</text>
-  <rect x="375" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="425" y="1362" text-anchor="middle" fill="#34d399" font-size="7">5: mb_depth</text>
-  <rect x="485" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="535" y="1362" text-anchor="middle" fill="#34d399" font-size="7">6: last_hex</text>
-  <rect x="595" y="1350" width="110" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="650" y="1362" text-anchor="middle" fill="#34d399" font-size="7">7: stability</text>
-  <rect x="715" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="765" y="1362" text-anchor="middle" fill="#34d399" font-size="7">8: velocity</text>
-  <rect x="825" y="1350" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="875" y="1362" text-anchor="middle" fill="#34d399" font-size="7">9: diversity</text>
-  <rect x="935" y="1350" width="110" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="990" y="1362" text-anchor="middle" fill="#34d399" font-size="7">10: entropia</text>
-
-  <!-- Slot row 2 -->
-  <rect x="45" y="1375" width="110" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="100" y="1387" text-anchor="middle" fill="#34d399" font-size="7">11: success</text>
-  <rect x="165" y="1375" width="120" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="225" y="1387" text-anchor="middle" fill="#34d399" font-size="7">12: correction</text>
-  <rect x="295" y="1375" width="110" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="350" y="1387" text-anchor="middle" fill="#34d399" font-size="7">13: completed</text>
-  <rect x="415" y="1375" width="100" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="465" y="1387" text-anchor="middle" fill="#34d399" font-size="7">14: praised</text>
-  <rect x="525" y="1375" width="120" height="16" rx="3" fill="#064e3b" stroke="rgba(34,211,153,.3)" stroke-width=".5"/>
-  <text x="585" y="1387" text-anchor="middle" fill="#34d399" font-size="7">15: attn_ent</text>
-
-  <text x="45" y="1410" fill="#94a3b8" font-size="8">build_env_vec(context) → env_vec(16,) → env_projector(16→256, zero-init) → h += env_projector(env_vec)</text>
-  <text x="45" y="1425" fill="#94a3b8" font-size="8">Missing slots → 0.0 | session_id → _compute_chain_signals() adds stability(7), velocity(8), diversity(9), entropia(10)</text>
-  <text x="45" y="1440" fill="#94a3b8" font-size="8">env_confidence: ≥0.7=sufficient, 0.4-0.7=partial, <0.4=thin — prob[6] q_gap < 0.01 → confidence -= 0.3</text>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Training + Flywheel -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="1505" width="1160" height="50" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="1531" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Online Learning (连续学习飞轮) — flywheel.py</text>
-
-  <rect x="30" y="1565" width="1140" height="200" rx="6" fill="rgba(120,53,15,0.2)" stroke="#fbbf24" stroke-width="1"/>
-
-  <!-- 7-step pipeline -->
-  <rect x="45" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="120" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 0: Flush buffer</text>
-  <text x="120" y="1603" text-anchor="middle" fill="#64748b" font-size="6">in-memory → .jsonl</text>
-
-  <line x1="195" y1="1592" x2="215" y2="1592" stroke="#fbbf24" stroke-width=".8" marker-end="url(#arrow-amber)"/>
-
-  <rect x="220" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="295" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 1: Scan sources</text>
-  <text x="295" y="1603" text-anchor="middle" fill="#64748b" font-size="6">Hermes+Claude+Buffer</text>
-
-  <line x1="370" y1="1592" x2="390" y2="1592" stroke="#fbbf24" stroke-width=".8" marker-end="url(#arrow-amber)"/>
-
-  <rect x="395" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="470" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 3: WM v2 update</text>
-  <text x="470" y="1603" text-anchor="middle" fill="#64748b" font-size="6">power-law weighted</text>
-
-  <line x1="545" y1="1592" x2="565" y2="1592" stroke="#fbbf24" stroke-width=".8" marker-end="url(#arrow-amber)"/>
-
-  <rect x="570" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="645" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 4: RL fine-tune</text>
-  <text x="645" y="1603" text-anchor="middle" fill="#64748b" font-size="6">v5, 64-dim proj</text>
-
-  <line x1="720" y1="1592" x2="740" y2="1592" stroke="#fbbf24" stroke-width=".8" marker-end="url(#arrow-amber)"/>
-
-  <rect x="745" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="820" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 5: Register</text>
-  <text x="820" y="1603" text-anchor="middle" fill="#64748b" font-size="6">registry.json ready</text>
-
-  <line x1="895" y1="1592" x2="915" y2="1592" stroke="#fbbf24" stroke-width=".8" marker-end="url(#arrow-amber)"/>
-
-  <rect x="920" y="1575" width="150" height="35" rx="4" fill="rgba(120,53,15,0.25)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="995" y="1592" text-anchor="middle" fill="#fbbf24" font-size="7">Step 6-7: Eval+Auto</text>
-  <text x="995" y="1603" text-anchor="middle" fill="#64748b" font-size="6">metrics.db + promote</text>
-
-  <!-- DataSources + Details -->
-  <rect x="45" y="1625" width="250" height="55" rx="4" fill="rgba(76,29,149,0.15)" stroke="#a78bfa" stroke-width=".6"/>
-  <text x="170" y="1642" text-anchor="middle" fill="#a78bfa" font-size="7">DataSource 三层抽象</text>
-  <text x="55" y="1657" fill="#94a3b8" font-size="7">• HermesDataSource: ~/.hermes/state.db</text>
-  <text x="55" y="1670" fill="#94a3b8" font-size="7">• ClaudeCodeDataSource: ~/.claude/**/*.jsonl</text>
-  <text x="55" y="1683" fill="#94a3b8" font-size="7">• FlywheelBufferSource: flywheel_buffer.jsonl</text>
-
-  <rect x="320" y="1625" width="250" height="55" rx="4" fill="rgba(136,19,55,0.15)" stroke="#fb7185" stroke-width=".6"/>
-  <text x="445" y="1642" text-anchor="middle" fill="#fb7185" font-size="7">WorldModelV2 Dual-Head</text>
-  <text x="330" y="1657" fill="#94a3b8" font-size="7">• HeadA: probes(9)+hex(64)→64-dim hex dist</text>
-  <text x="330" y="1670" fill="#94a3b8" font-size="7">• HeadB: probes(9)+hex(64)→3-dim ext vec</text>
-  <text x="330" y="1683" fill="#94a3b8" font-size="7">• Power-law w(t) = (1+age/τ)^(-α)</text>
-
-  <rect x="595" y="1625" width="250" height="55" rx="4" fill="rgba(8,51,68,0.15)" stroke="#22d3ee" stroke-width=".6"/>
-  <text x="720" y="1642" text-anchor="middle" fill="#22d3ee" font-size="7">RL Fine-tune v5</text>
-  <text x="605" y="1657" fill="#94a3b8" font-size="7">• Rewards projected to 64-dim hex space</text>
-  <text x="605" y="1670" fill="#94a3b8" font-size="7">• Freezes encoder, trains router+value+dec</text>
-  <text x="605" y="1683" fill="#94a3b8" font-size="7">• Cosine(WM_pred, target)-based reward</text>
-
-  <rect x="870" y="1625" width="280" height="55" rx="4" fill="rgba(6,78,59,0.15)" stroke="#34d399" stroke-width=".6"/>
-  <text x="1010" y="1642" text-anchor="middle" fill="#34d399" font-size="7">Registry + Auto-Promote</text>
-  <text x="880" y="1657" fill="#94a3b8" font-size="7">• registry.json: active, ready, fallback</text>
-  <text x="880" y="1670" fill="#94a3b8" font-size="7">• Auto-promote: ready.win_rate ≥ active+3%</text>
-  <text x="880" y="1683" fill="#94a3b8" font-size="7">• check_for_switch() on every predict()</text>
-
-  <text x="600" y="1750" text-anchor="middle" fill="#475569" font-size="7">flywheel.py:100-250 | world_model.py:30-120 | rl_train.py:50-200</text>
-
-  <!-- ════════════════════════════════════════════════════ -->
-  <!-- SECTION: Module Dependency Graph -->
-  <!-- ════════════════════════════════════════════════════ -->
-
-  <rect x="20" y="1800" width="1160" height="110" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
-  <text x="600" y="1822" text-anchor="middle" fill="#e2e8f0" font-weight="700" font-size="14">Module Dependency Graph (模块依赖图)</text>
-
-  <!-- Central: yicenet_engine.py -->
-  <rect x="420" y="1840" width="164" height="22" rx="4" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1"/>
-  <text x="502" y="1856" text-anchor="middle" fill="#22d3ee" font-size="8" font-weight="700">yicenet_engine.py</text>
-
-  <line x1="420" y1="1851" x2="310" y2="1851" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <text x="365" y="1845" text-anchor="middle" fill="#64748b" font-size="6">predict()</text>
-  <rect x="180" y="1840" width="130" height="22" rx="4" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width=".8"/>
-  <text x="245" y="1856" text-anchor="middle" fill="#34d399" font-size="7">model.py YiCeNet</text>
-
-  <line x1="420" y1="1857" x2="310" y2="1873" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <rect x="180" y="1864" width="130" height="22" rx="4" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width=".8"/>
-  <text x="245" y="1880" text-anchor="middle" fill="#a78bfa" font-size="7">memory_bank.py</text>
-
-  <line x1="584" y1="1851" x2="694" y2="1851" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <rect x="694" y="1840" width="130" height="22" rx="4" fill="rgba(120,53,15,0.4)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="759" y="1856" text-anchor="middle" fill="#fbbf24" font-size="7">config.py</text>
-
-  <line x1="584" y1="1857" x2="694" y2="1873" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <rect x="694" y="1864" width="130" height="22" rx="4" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width=".8"/>
-  <text x="759" y="1880" text-anchor="middle" fill="#34d399" font-size="7">env_context.py</text>
-
-  <line x1="584" y1="1864" x2="694" y2="1879" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <rect x="694" y="1882" width="130" height="22" rx="4" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width=".8"/>
-  <text x="759" y="1898" text-anchor="middle" fill="#fb7185" font-size="7">cross_attn.py</text>
-
-  <line x1="584" y1="1870" x2="694" y2="1888" stroke="#22d3ee" stroke-width=".8" marker-end="url(#arrow-cyan)"/>
-  <rect x="694" y="1894" width="130" height="22" rx="4" fill="rgba(120,53,15,0.4)" stroke="#fbbf24" stroke-width=".8"/>
-  <text x="759" y="1910" text-anchor="middle" fill="#fbbf24" font-size="7">tokenizer.py</text>
+<h1>YiCeNet 易策网络 — v15.6.1 架构</h1>
+<div class="sub">5.67M params · 22MB FP32 · 7ms inference · 7 ABC interfaces · 3 display backends · Phase 1-5 ✅</div>
+<svg viewBox="0 0 1250 880">
+<defs>
+  <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+  <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+</defs>
+
+<text x="15" y="25" class="section-title">▸ 接入层</text>
+<text x="15" y="195" class="section-title">▸ 核心层</text>
+<text x="15" y="460" class="section-title">▸ 基础设施层</text>
+
+<!-- ═══════════ 接入层 ═══════════ -->
+
+<!-- Hermes Plugin -->
+<rect x="20" y="35" width="190" height="60" class="box" rx="6"/>
+<text x="30" y="55" class="title-text">Hermes Plugin</text>
+<text x="30" y="70" class="sub-text">tools/hermes_hook.py</text>
+<text x="30" y="83" class="sub-text">pre_llm_call / post_tool_call / post_llm_call</text>
+
+<!-- MCP Server (legacy) -->
+<rect x="240" y="35" width="190" height="60" class="box" rx="6"/>
+<text x="250" y="55" class="title-text">MCP Server (legacy)</text>
+<text x="250" y="70" class="sub-text">mcp_server.py</text>
+<text x="250" y="83" class="sub-text">async tools + IOCP fix</text>
+
+<!-- Claude Code Hooks -->
+<rect x="460" y="35" width="190" height="60" class="box" rx="6"/>
+<text x="470" y="55" class="title-text">Claude Code Hooks</text>
+<text x="470" y="70" class="sub-text">tools/claude_hook.py</text>
+<text x="470" y="83" class="sub-text">PreMessageSend + PostToolUse</text>
+
+<!-- Python API -->
+<rect x="680" y="35" width="190" height="60" class="box" rx="6"/>
+<text x="690" y="55" class="title-text">Python API</text>
+<text x="690" y="70" class="sub-text">from yicenet import YiCeNetEngine</text>
+<text x="690" y="83" class="sub-text">predict() / prescribe() / analyze()</text>
+
+<!-- EngineProvider -->
+<rect x="240" y="115" width="340" height="50" class="box-accent" rx="6"/>
+<text x="250" y="138" class="title-text" fill="#58a6ff">EngineProvider (统一工厂)</text>
+<text x="250" y="152" class="sub-text">engine_provider.py · get_engine() · check_switch()</text>
+
+<!-- 接入 → EngineProvider -->
+<line x1="115" y1="95" x2="350" y2="115" class="arrow" marker-end="url(#arrow)"/>
+<line x1="335" y1="95" x2="390" y2="115" class="arrow" marker-end="url(#arrow)"/>
+<line x1="555" y1="95" x2="480" y2="115" class="arrow" marker-end="url(#arrow)"/>
+<line x1="775" y1="95" x2="585" y2="115" class="arrow" marker-end="url(#arrow)"/>
+
+<!-- ═══════════ 核心层 ═══════════ -->
+
+<!-- YiCeNetEngine -->
+<rect x="20" y="210" width="340" height="150" class="box-accent" rx="6"/>
+<text x="30" y="233" class="title-text" fill="#58a6ff">YiCeNetEngine</text>
+<text x="30" y="250" class="sub-text">yicenet_engine.py · DI via ProviderRegistry</text>
+<line x1="30" y1="258" x2="340" y2="258" stroke="#30363d"/>
+<text x="30" y="274" class="sub-text">predict() → PredictionResult (7ms)</text>
+<text x="30" y="290" class="sub-text">prescribe() → Prescription (5ms)</text>
+<text x="30" y="306" class="sub-text">analyze() → EnvAnalysis (3ms)</text>
+<text x="30" y="322" class="sub-text">switch_model() · predict_structured()</text>
+<text x="30" y="340" class="sub-text">return_prescription: deprecated</text>
+
+<!-- ProviderRegistry -->
+<rect x="400" y="210" width="260" height="150" class="box" rx="6"/>
+<text x="410" y="233" class="title-text">ProviderRegistry</text>
+<text x="410" y="250" class="sub-text">providers/__init__.py</text>
+<line x1="410" y1="258" x2="640" y2="258" stroke="#30363d"/>
+<text x="410" y="274" class="sub-text">ITokenizer → QwenTokenizerAdapter</text>
+<text x="410" y="290" class="sub-text">IMemoryBank → MemoryBank</text>
+<text x="410" y="306" class="sub-text">IDisplay → get_display(cfg)</text>
+<text x="410" y="322" class="sub-text">default() / override(test)</text>
+<text x="410" y="340" class="sub-text">abs imports P1 · instance-per-call P3</text>
+
+<!-- Engine → Registry -->
+<line x1="360" y1="285" x2="400" y2="285" class="arrow" marker-end="url(#arrow)"/>
+
+<!-- Model -->
+<rect x="700" y="210" width="200" height="75" class="box" rx="6"/>
+<text x="710" y="233" class="title-text">YiCeNet Model</text>
+<text x="710" y="250" class="sub-text">model.py · 5.67M params</text>
+<line x1="710" y1="258" x2="880" y2="258" stroke="#30363d"/>
+<text x="710" y="274" class="sub-text">TinyEncoder (4层, 256-dim)</text>
+<text x="710" y="283" class="sub-text">GumbelRouter / ValueNetwork</text>
+
+<!-- Display Layer -->
+<rect x="700" y="300" width="200" height="60" class="box-green" rx="6"/>
+<text x="710" y="318" class="title-text" fill="#3fb950">Display Layer</text>
+<text x="710" y="335" class="sub-text">display.py · IDisplay ABC</text>
+<text x="710" y="348" class="sub-text">Terminal / Json / Silent</text>
+
+<!-- ═══════════ 基础设施层 ═══════════ -->
+
+<!-- Row 1 -->
+<rect x="20" y="470" width="175" height="55" class="box" rx="6"/>
+<text x="30" y="493" class="title-text">Types (契约)</text>
+<text x="30" y="510" class="sub-text">types.py · PredictionResult</text>
+<text x="30" y="520" class="sub-text">Prescription / EnvAnalysis / DisplayConfig</text>
+
+<rect x="215" y="470" width="175" height="55" class="box" rx="6"/>
+<text x="225" y="493" class="title-text">Interfaces (ABC)</text>
+<text x="225" y="510" class="sub-text">interfaces.py · 7 ABCs</text>
+<text x="225" y="520" class="sub-text">ITokenizer/IEncoder/IRouter/...</text>
+
+<rect x="410" y="470" width="175" height="55" class="box" rx="6"/>
+<text x="420" y="493" class="title-text">Tokenizer</text>
+<text x="420" y="510" class="sub-text">tokenizer.py · Qwen2.5-0.5B</text>
+<text x="420" y="520" class="sub-text">~/.yicenet/tokenizer/ 本地缓存</text>
+
+<rect x="605" y="470" width="175" height="55" class="box" rx="6"/>
+<text x="615" y="493" class="title-text">MemoryBank</text>
+<text x="615" y="510" class="sub-text">memory_bank.py · FIFO</text>
+<text x="615" y="520" class="sub-text">5000 turns, 384d</text>
+
+<rect x="800" y="470" width="175" height="55" class="box" rx="6"/>
+<text x="810" y="493" class="title-text">CrossAttention</text>
+<text x="810" y="510" class="sub-text">cross_attention.py</text>
+<text x="810" y="520" class="sub-text">ContextPrescription (70%压缩)</text>
+
+<!-- Row 2 -->
+<rect x="20" y="540" width="175" height="55" class="box" rx="6"/>
+<text x="30" y="563" class="title-text">Hexagram</text>
+<text x="30" y="580" class="sub-text">hexagram.py · 64卦推理</text>
+
+<rect x="215" y="540" width="175" height="55" class="box" rx="6"/>
+<text x="225" y="563" class="title-text">EnvContext</text>
+<text x="225" y="580" class="sub-text">env_context.py · 16-dim</text>
+
+<rect x="410" y="540" width="175" height="55" class="box" rx="6"/>
+<text x="420" y="563" class="title-text">Probes</text>
+<text x="420" y="580" class="sub-text">probes.py · 9 probes</text>
+
+<rect x="605" y="540" width="175" height="55" class="box" rx="6"/>
+<text x="615" y="563" class="title-text">Flywheel</text>
+<text x="615" y="580" class="sub-text">flywheel.py · 7步管线</text>
+
+<rect x="800" y="540" width="175" height="55" class="box" rx="6"/>
+<text x="810" y="563" class="title-text">DataSource</text>
+<text x="810" y="580" class="sub-text">datasource/* · 3 impls</text>
+
+<!-- Row 3 -->
+<rect x="20" y="615" width="310" height="55" class="box" rx="6"/>
+<text x="30" y="638" class="title-text">Platform Installers</text>
+<text x="30" y="655" class="sub-text">install/ · PlatformInstaller ABC</text>
+<text x="30" y="665" class="sub-text">HermesInstaller + ClaudeCodeInstaller</text>
+
+<rect x="355" y="615" width="220" height="55" class="box" rx="6"/>
+<text x="365" y="638" class="title-text">Bootstrap (简化)</text>
+<text x="365" y="655" class="sub-text">bootstrap.py · 505行编排器</text>
+<text x="365" y="665" class="sub-text">(从 776 行压缩 45%)</text>
+
+<rect x="600" y="615" width="200" height="55" class="box" rx="6"/>
+<text x="610" y="638" class="title-text">Config</text>
+<text x="610" y="655" class="sub-text">config.py · PathConfig</text>
+<text x="610" y="665" class="sub-text">ModelArchConfig / TrainingConfig</text>
+
+<!-- 6 原则 -->
+<rect x="20" y="690" width="970" height="100" class="box" rx="6"/>
+<text x="30" y="713" class="title-text">6 设计原则遵守情况</text>
+<line x1="30" y1="720" x2="970" y2="720" stroke="#30363d"/>
+<text x="30" y="738" class="sub-text">1️⃣ 接口优于实现 ✅ 7 ABC (ITokenizer/IEncoder/IRouter/IValueNetwork/IMemoryBank/IEngine/IDisplay)</text>
+<text x="30" y="756" class="sub-text">2️⃣ 依赖注入 ⚠️ tokenizer/memory/display 走 ProviderRegistry · model 仍 self.new (Phase 3 局限)</text>
+<text x="30" y="774" class="sub-text">3️⃣ 职责分离 ✅ predict/prescribe/analyze + DeprecationWarning · return_prescription deprecated</text>
+<text x="30" y="792" class="sub-text">4️⃣ 去重 ✅ EngineProvider 消灭 hermes_tool + mcp 重复 _get_engine()</text>
+
+<!-- 版本历史 -->
+<rect x="20" y="810" width="970" height="55" class="box-green" rx="6"/>
+<text x="30" y="833" class="title-text" fill="#3fb950">Phase 1-5 全部完成并推 GH</text>
+<line x1="30" y1="840" x2="970" y2="840" stroke="#30363d"/>
+<text x="30" y="855" class="sub-text">423a52b Phase 1 types + EngineProvider · 7c60e1a Phase 2 6 ABCs · 138591e Phase 3 ProviderRegistry · 07519d2 Phase 4 prescribe/analyze · 467d22d Phase 5 install · 796e141 Phase 5b bootstrap · b957bdf display layer · 4028453 fix __all__ + uninstall</text>
 
 </svg>
-</div>
-
-<!-- Bottom Cards -->
-<div class="card-grid">
-  <div class="card">
-    <div class="card-header"><div class="card-dot" style="background:#22d3ee"></div><h3>参数分布</h3></div>
-    <ul>
-      <li><b>Embedding (8000×256):</b> 2,048,000</li>
-      <li><b>Transformer (4 blocks):</b> ~3,060,000</li>
-      <li><b>Router (256→64):</b> 16,448</li>
-      <li><b>ValueNet (256→128→64→1):</b> 33,856</li>
-      <li><b>ActionDecoder (256→50):</b> 26,112</li>
-      <li><b>HexagramEmbed (64×256):</b> 16,384</li>
-      <li><b>TrigramCrossAttn:</b> 131,584</li>
-      <li><b>EnvProjector (16→256):</b> 4,096</li>
-    </ul>
-  </div>
-  <div class="card">
-    <div class="card-header"><div class="card-dot" style="background:#34d399"></div><h3>训练数据流</h3></div>
-    <ul>
-      <li>Hermes DB → <b>HermesDataSource</b> (SQL user→assistant→next)</li>
-      <li>Claude Code logs → <b>ClaudeCodeDataSource</b> (JSONL pairs)</li>
-      <li>Plugin buffer → <b>FlywheelBufferSource</b> (jsonl incremental)</li>
-      <li>→ <b>WorldModelV2</b> dual-head (power-law weighted)</li>
-      <li>→ <b>RL v5</b> (64-dim projection reward, cosine similarity)</li>
-      <li>→ <b>Auto-promote</b> (≥3% win_rate → active)</li>
-    </ul>
-  </div>
-  <div class="card">
-    <div class="card-header"><div class="card-dot" style="background:#a78bfa"></div><h3>关键文件索引</h3></div>
-    <ul>
-      <li><b>engine:</b> yicenet_engine.py — predict/attend/switch</li>
-      <li><b>model:</b> model.py — YiCeNet.forward() tensor chain</li>
-      <li><b>tokenizer:</b> tokenizer.py — Qwen BPE→YiCeNet vocab</li>
-      <li><b>memory:</b> memory_bank.py — per-session TurnRecord[]</li>
-      <li><b>prescription:</b> cross_attention.py — retain/summarize/discard</li>
-      <li><b>env:</b> env_context.py — 16-dim build_env_vec()</li>
-      <li><b>flywheel:</b> flywheel.py — 7-step online learning</li>
-      <li><b>hexagram:</b> hexagram.py — 错综互变, generate_candidates()</li>
-    </ul>
-  </div>
-</div>
-
-<div class="footer">
-YiCeNet v15.6.0 · ~5,671,859 params · ~22MB FP32 · Qwen2.5-0.5B BPE tokenizer · ~7ms inference (CPU) · 64 hexagrams · 8 candidates · 50 actions · 16 env dim · 9 probes · 4-layer encoder · 3-layer value net · Dual-head WM · Power-law forgetting · Hermes+ClaudeCode datasources · Auto-promote · Apache 2.0
-</div>
-
 </body>
 </html>
