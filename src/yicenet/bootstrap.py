@@ -815,6 +815,19 @@ def bootstrap(auto: bool = False, venv: str = "",
     ensure_checkpoints()
     print()
 
+    # ── Phase 4b: Tokenizer（本地快取）──
+    print("── Phase 4b: Tokenizer ──")
+    try:
+        from yicenet.tokenizer import download_tokenizer, tokenizer_available
+        if tokenizer_available():
+            print("  ✓ Already cached")
+        else:
+            download_tokenizer()
+    except Exception as e:
+        print(f"  ⚠ download_tokenizer failed: {e}")
+        print("  (Tokenizer will load from HF Hub at first use)")
+    print()
+
     # ── Phase 5: 資料根初始化 ──
     print("── Phase 5: 資料根初始化 ──")
     init_data_root(soul_path=soul)
