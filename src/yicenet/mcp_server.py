@@ -23,50 +23,13 @@ Or run install-claudecode-hooks.sh to configure automatically.
 """
 
 import json
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from yicenet.config import yicenet_checkpoint_dir, yicenet_home
+from yicenet.config import yicenet_checkpoint_dir
+from yicenet.engine_provider import EngineProvider
 
 mcp = FastMCP("yicenet")
-
-_engine = None
-_active_version: str = ""
-
-
-def _get_engine():
-    global _engine, _active_version
-    if _engine is not None:
-        return _engine
-    from yicenet.yicenet_engine import YiCeNetEngine
-
-    checkpoint_dir = yicenet_checkpoint_dir()
-    reg_path = checkpoint_dir / "registry.json"
-    ckpt = ""
-    if reg_path.exists():
-        try:
-            reg = json.loads(reg_path.read_text(encoding="utf-8"))
-            active = reg.get("active", {})
-            ckpt = active.get("path", "")
-            _active_version = active.get("version", "")
-            if ckpt and not Path(ckpt).is_absolute():
-                ckpt = str(checkpoint_dir / ckpt)
-        except Exception:
-            pass
-    if not ckpt or not Path(ckpt).exists():
-        # Auto-discover latest checkpoint from checkpoints/ directory
-        pt_files = sorted(checkpoint_dir.glob("yicenet_v*.pt"))
-        if pt_files:
-            ckpt = str(pt_files[-1])  # latest by version name
-        else:
-            raise RuntimeError(
-                f"No checkpoint found in {checkpoint_dir}. "
-                "Run 'yicenet-bootstrap' to download checkpoints, "
-                "or set YICENET_HOME to a directory with checkpoints."
-            )
-    _engine = YiCeNetEngine(checkpoint=ckpt, project_root=str(yicenet_home()))
-    return _engine
 
 
 @mcp.tool()
@@ -101,7 +64,7 @@ async def yicenet_attend(
     import anyio
 
     def _run():
-        engine = _get_engine()
+        engine = EngineProvider.get_engine()
         result = engine.attend(
             task_text,
             session_id=session_id,
@@ -163,7 +126,7 @@ async def yicenet_predict(
     import anyio
 
     def _run():
-        engine = _get_engine()
+        engine = EngineProvider.get_engine()
         return engine.predict(
             task_brief,
             temperature=temperature,
@@ -237,8 +200,7 @@ async def yicenet_switch(checkpoint: str) -> dict:
     import anyio
 
     def _run():
-        engine = _get_engine()
-        success = engine.switch_model(checkpoint)
+        success = EngineProvider.switch(checkpoint)
         return {"success": success, "active": checkpoint}
 
     return await anyio.to_thread.run_sync(_run)
