@@ -92,10 +92,7 @@ def pre_message_send() -> None:
         sys.stderr.write(label + "\n")
         sys.stderr.flush()
 
-        # ── Line 1: stdout → compact label (plain text, user-visible) ──
-        print(label, flush=True)
-
-        # ── Line 2: stdout → JSON metadata (Claude reads from context) ──
+        # ── stdout → JSON metadata injected into Claude's system context ──
         output = {
             "yicenet": {
                 "session_id": session_id,

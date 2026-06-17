@@ -13,7 +13,14 @@ Display injection:
 """
 from __future__ import annotations
 
+import os
 import sys
+
+# Suppress tokenizer/model progress bars and HF Hub network calls.
+# Must run before any sentence-transformers or transformers import.
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 def pre_llm_call(context: dict) -> dict | None:
