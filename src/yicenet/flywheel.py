@@ -428,6 +428,27 @@ def _update_world_model_v2(buffer_path: Path):
     optimizer = torch.optim.AdamW(wm.parameters(), lr=1e-4)
     now = time.time()
 
+    # ── Compute batch-level normalization stats for ext vector ──
+    #    Log-transforms (recover natural distribution) then z-score
+    #    (remove scale differences) so all three dimensions contribute
+    #    equally to MSE without engineer-assigned weights.
+    import math as _math
+    _raw_targets = []
+    for s in batch:
+        tc = s.get("token_cost", 0.5)
+        rl = s.get("response_length", 0.5)
+        _raw_targets.append([
+            _math.log(max(tc, 1) + 1),      # log(t+1), clamp to ≥1
+            _math.log(max(rl, 1) + 1),      # log(t+1), clamp to ≥1
+            s.get("satisfaction", 0.0),     # already in [-1, 1]
+        ])
+    _t = torch.tensor(_raw_targets, dtype=torch.float32)
+    ext_mean = _t.mean(dim=0)
+    ext_std = _t.std(dim=0).clamp(min=1e-8)
+
+    def _normalize_ext(x: torch.Tensor) -> torch.Tensor:
+        return (x - ext_mean.to(x.device)) / ext_std.to(x.device)
+
     total_loss_a = 0.0
     total_loss_b = 0.0
     total_count = 0
@@ -461,13 +482,16 @@ def _update_world_model_v2(buffer_path: Path):
             completion_w=config.ext_completion_weight,
         ).to(device)
 
-        # Target external vector
+        # Target external vector (log-transformed, then z-scored)
+        tc = s.get("token_cost", 0.5)
+        rl = s.get("response_length", 0.5)
         target_ext = torch.tensor(
-            [s.get("token_cost", 0.5),
-             s.get("response_length", 0.5),
+            [_math.log(max(tc, 1) + 1),
+             _math.log(max(rl, 1) + 1),
              s.get("satisfaction", 0.0)],
             dtype=torch.float32, device=device
         )
+        target_ext_norm = _normalize_ext(target_ext)
 
         # Power-law weights
         w_slow = power_law_weight(ts, now, WM_SLOW_TAU_DAYS, WM_ALPHA)
@@ -487,13 +511,21 @@ def _update_world_model_v2(buffer_path: Path):
         # Forward through WM
         pred_dist, pred_ext = wm(probes_t.unsqueeze(0), hex_id)
 
-        # Weighted loss
+        # Log-transform pred too (WM outputs raw-scale values)
+        pred_log = torch.stack([
+            pred_ext[0, 0].clamp(min=1).log1p(),
+            pred_ext[0, 1].clamp(min=1).log1p(),
+            pred_ext[0, 2],
+        ]).detach()
+
+        # Weighted loss (normalized ext space — remove scale dominance)
         loss_a = (w_slow * F.kl_div(
             pred_dist.clamp(min=1e-8).log(),
             target_dist.unsqueeze(0).clamp(min=1e-8),
             reduction="sum",
         ))
-        loss_b = (w_fast * (pred_ext - target_ext.unsqueeze(0)).pow(2).mean())
+        pred_ext_norm = _normalize_ext(pred_log)
+        loss_b = (w_fast * (pred_ext_norm - target_ext_norm.unsqueeze(0)).pow(2).mean())
 
         loss = loss_a + WM_BETA * loss_b
 
