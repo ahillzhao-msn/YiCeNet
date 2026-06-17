@@ -2,35 +2,134 @@
 YiCeNet Hermes plugin hook implementations.
 
 Called from ~/.hermes/plugins/yicenet-hooks/__init__.py:
-  pre_llm_call(context)   — inject hexagram framing before LLM sees the prompt
-  post_tool_call(context) — record tool result in MemoryBank
-  post_llm_call(context)  — submit flywheel reward signal
+  pre_llm_call(context)   — inject hexagram framing + consume prior feedback
+  post_tool_call(context) — record tool invocation in MemoryBank
+  post_llm_call(context)  — store response metadata for next turn's feedback
 
-Display injection:
-  TerminalDisplay(mode=compact) via ProviderRegistry.default().display.
-  If hexagram_chain is enabled in config and session_id is present,
-  the turn-history chain prefix is prepended automatically.
+Hermes is a long-lived daemon: MemoryBank stays in memory between calls.
+FileBackend is attached only if persist_daemon_sessions=True in config.
+
+HermesAdapter.platform_signals() computes corrected/praised from
+conversation_history so the orchestrator uses real signals, not text guesses.
 """
 from __future__ import annotations
 
 import sys
 
 
+# ── Platform adapter ──────────────────────────────────────────────────────────
+
+class HermesAdapter:
+    """Translates Hermes context dicts to domain primitives."""
+
+    platform_id = "hermes"
+    process_model = "daemon"
+
+    def session_id(self, payload: dict) -> str:
+        return payload.get("session_id", "")
+
+    def turn_id(self, payload: dict) -> int:
+        return int(payload.get("turn_id", 0))
+
+    def prompt(self, payload: dict) -> str:
+        messages = payload.get("messages") or [{}]
+        last = messages[-1]
+        return last.get("content", "") if isinstance(last, dict) else ""
+
+    def assistant_response(self, payload: dict) -> str:
+        """Extract assistant response text from Hermes post_llm_call context."""
+        resp = payload.get("assistant_response") or payload.get("response", "")
+        if isinstance(resp, dict):
+            return resp.get("content", "")
+        return str(resp) if resp else ""
+
+    def platform_signals(self, payload: dict):
+        """Derive real feedback signals from conversation_history.
+
+        Hermes supplies the full conversation at post_llm_call time, so we
+        can compare the current user message against the previous assistant
+        response to infer corrected / praised / continued directly.
+        Returns None at pre_llm_call (called before the response exists).
+        """
+        history = payload.get("conversation_history") or []
+        if len(history) < 2:
+            return None
+
+        # Find the last user message and the assistant message before it
+        user_msg, prev_asst = "", ""
+        for i in range(len(history) - 1, -1, -1):
+            entry = history[i]
+            role = entry.get("role", "")
+            content = entry.get("content", "")
+            if role == "user" and not user_msg:
+                user_msg = content
+            elif role == "assistant" and user_msg and not prev_asst:
+                prev_asst = content
+                break
+
+        if not user_msg or not prev_asst:
+            return None
+
+        from yicenet.external_metrics import (
+            compute_satisfaction, estimate_token_cost,
+            _check_patterns,
+            _CORRECTION_PATTERNS, _COMPLETION_PATTERNS,
+            _PRAISE_PATTERNS, _ABANDON_PATTERNS,
+        )
+        corrected = _check_patterns(user_msg, _CORRECTION_PATTERNS)
+        completed = _check_patterns(user_msg, _COMPLETION_PATTERNS)
+        praised   = _check_patterns(user_msg, _PRAISE_PATTERNS)
+        abandoned = _check_patterns(user_msg, _ABANDON_PATTERNS) or not user_msg.strip()
+        continued = bool(user_msg.strip()) and not abandoned
+        satisfaction = compute_satisfaction(user_msg, prev_asst)
+        token_cost = estimate_token_cost(prev_asst)
+
+        return {
+            "continued":   continued,
+            "corrected":   corrected,
+            "completed":   completed,
+            "praised":     praised,
+            "abandoned":   abandoned,
+            "satisfaction": satisfaction,
+            "token_cost":  token_cost,
+        }
+
+
+# ── Module-level singleton ────────────────────────────────────────────────────
+
+_adapter = HermesAdapter()
+_orchestrator = None
+
+
+def _orch():
+    global _orchestrator
+    if _orchestrator is None:
+        from yicenet.hook_engine import HookOrchestrator
+        _orchestrator = HookOrchestrator(_adapter)
+    return _orchestrator
+
+
+# ── Hook entry points ─────────────────────────────────────────────────────────
+
 def pre_llm_call(context: dict) -> dict | None:
-    """Inject YiCeNet hexagram context before the LLM call."""
+    """Inject YiCeNet hexagram context; consume previous turn's feedback."""
+    # Submit feedback for the previous turn first
+    try:
+        _orch().before_prediction(context)
+    except Exception:
+        pass
+
     try:
         from yicenet.engine_provider import EngineProvider
         from yicenet.providers import ProviderRegistry
 
-        prompt = (context.get("messages") or [{}])[-1].get("content", "")
-        session_id = context.get("session_id", "")
+        prompt = _adapter.prompt(context)
+        session_id = _adapter.session_id(context)
 
         engine = EngineProvider.get_engine()
         result = engine.predict(prompt or "general task", temperature=0.1)
 
         display = ProviderRegistry.default().display
-
-        # Fetch chain only when the display is configured to use it
         chain = None
         if session_id and display.needs_chain:
             from yicenet.memory_bank import get_memory_bank
@@ -47,8 +146,8 @@ def pre_llm_call(context: dict) -> dict | None:
 def post_tool_call(context: dict) -> None:
     """Record tool invocation turn in MemoryBank."""
     try:
-        session_id = context.get("session_id", "")
-        turn_id = context.get("turn_id", 0)
+        session_id = _adapter.session_id(context)
+        turn_id = _adapter.turn_id(context)
         tool_name = context.get("tool_name", "")
         if not session_id:
             return
@@ -65,25 +164,8 @@ def post_tool_call(context: dict) -> None:
 
 
 def post_llm_call(context: dict) -> None:
-    """Submit flywheel reward from conversation outcome signals."""
+    """Record response metadata for next turn's real feedback extraction."""
     try:
-        from yicenet.flywheel import submit_trajectory
-
-        session_id = context.get("session_id", "")
-        signals = context.get("signals", {})
-        submit_trajectory({
-            "producer": "hermes-hook",
-            "version": 1,
-            "conversation_id": session_id,
-            "trajectory": {
-                "continued": bool(signals.get("continued")),
-                "corrected": bool(signals.get("corrected")),
-                "completed": bool(signals.get("completed")),
-                "praised": bool(signals.get("praised")),
-                "abandoned": bool(signals.get("abandoned")),
-                "token_cost": int(signals.get("token_cost", 0)),
-                "token_efficiency": float(signals.get("token_efficiency", 0.0)),
-            },
-        })
+        _orch().on_turn_complete(context)
     except Exception:
         pass

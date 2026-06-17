@@ -83,7 +83,17 @@ class IMemoryBank(ABC):
         encoder_output: np.ndarray,
         hexagram_id: int,
         summary: str = "",
+        timestamp: float = 0.0,
+        metadata: "dict | None" = None,
     ) -> None: ...
+
+    @abstractmethod
+    def update_turn_metadata(
+        self, session_id: str, turn_id: int, metadata: dict
+    ) -> None: ...
+
+    @abstractmethod
+    def get_last_turn(self, session_id: str) -> "object | None": ...
 
     @abstractmethod
     def get_session_keys(

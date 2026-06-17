@@ -17,6 +17,12 @@ for _s in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
+# Configure MemoryBank with FileBackend before any engine import.
+# Must run before get_memory_bank() is first called anywhere in this process.
+from yicenet.tools.claude_hook import ClaudeCodeAdapter
+from yicenet.memory_bank import configure_memory_bank_for
+configure_memory_bank_for(ClaudeCodeAdapter())
+
 event = os.environ.get("YICENET_HOOK_EVENT") or (sys.argv[1] if len(sys.argv) > 1 else "pre")
 
 if event == "pre":
