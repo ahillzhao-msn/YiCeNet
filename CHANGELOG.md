@@ -2,6 +2,92 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [16.0.0] — 2026-06-17
+
+Major release: real feedback signal pipeline, platform-independent hook architecture,
+MemoryBank persistence, and performance fixes.
+
+### Added
+
+- **`hook_engine` package** (`src/yicenet/hook_engine/`) — platform-independent
+  layer that decouples feedback extraction and orchestration from platform specifics.
+  - `PlatformAdapter` Protocol: `platform_id`, `process_model`, `session_id()`,
+    `prompt()`, `assistant_response()`, `platform_signals()`
+  - `FeedbackSignals` frozen dataclass: `continued/corrected/completed/praised/abandoned/satisfaction/token_cost`
+  - `extract_feedback(next_prompt, last_turn)` — pure function, no I/O; infers
+    all signals from the next turn's user text (1-turn delay design)
+  - `signals_from_platform(raw)` — lifts platform-provided dict to `FeedbackSignals`
+  - `build_trajectory(signals, last_turn, session_id, platform)` — assembles
+    flywheel sample dict
+  - `HookOrchestrator`: `before_prediction()` submits Turn N's real feedback at
+    the start of Turn N+1; `on_turn_complete()` stores response metadata
+
+- **`FileBackend`** (`src/yicenet/memory_bank.py`) — JSONL write-through
+  persistence for `MemoryBank`, designed for cross-process state sharing:
+  - WAL (Write-Ahead Log) `update()`: O(1) patch-line append instead of O(n)
+    full file rewrite; `load()` merges patches in a single pass
+  - `compact(session_id)`: folds WAL patches into base records (called from
+    `cleanup_stale()` for live sessions)
+  - `cleanup_stale(max_age_hours=48)`: deletes stale session files, compacts
+    live ones; TTL configurable via `memory.session_ttl_hours` in config.yaml
+  - `configure_memory_bank_for(adapter)`: idempotent singleton factory — attaches
+    `FileBackend` for subprocess adapters, uses config flag for daemon adapters
+
+- **`TurnRecord.metadata`** — flexible `dict` field populated incrementally
+  across hooks: `response_snippet`, `response_char_count`, `platform_signals`
+
+- **`ClaudeCodeAdapter`** (`process_model="subprocess"`) and **`HermesAdapter`**
+  (`process_model="daemon"`) implementing `PlatformAdapter`
+
+- **`HermesAdapter.platform_signals()`** — derives `corrected/praised/satisfaction`
+  directly from `conversation_history` at `post_llm_call` time; no text guessing
+
+- **`configure_memory_bank_for()`** call added to `_claude_runner.py` and
+  `_hermes_stub.py` so `FileBackend` is active before any engine code runs
+
+- **CJK pattern expansion** (`src/yicenet/external_metrics.py`):
+  - All four pattern sets now carry both Traditional and Simplified Chinese variants
+  - Removed `\b` anchors from CJK patterns (no ASCII word boundaries in Chinese)
+  - Praise: 谢谢/感谢/太棒了/辛苦了 + English *well done / spot on / nailed it*
+  - Correction: 不对啊/再来一次/不对不对 + English *hold on / try again / fix it*
+  - Completion: 明白了/嗯嗯/没问题 + English *i see / makes sense / go ahead*
+  - Abandon: 先这样吧/就这样 + English *enough / i'm done / that will do*
+  - Coverage: 15/15 CJK test cases PASS (previously 0% Simplified Chinese hit rate)
+
+### Changed
+
+- **`flywheel.py`**: `submit_trajectory()` writes directly to
+  `~/.yicenet/data/flywheel_buffer.jsonl` via cross-platform file lock
+  (`msvcrt` on Windows, `fcntl` on POSIX); eliminates in-memory buffer loss
+  on process exit. `flywheel_run()` calls `_rotate_buffer()` after training
+  (keeps last 500 records).
+
+- **`MemoryBank.store_turn()`** gains `timestamp` and `metadata` optional params.
+  New methods: `update_turn_metadata()`, `get_last_turn()`
+
+- **`ClaudeCodeAdapter.post_tool_use()`** is now a no-op; removed `PostToolUse`
+  from `ClaudeCodeInstaller._patch_settings()` and live `~/.claude/settings.json`
+  (feedback signals require the next user message; the subprocess was wasted)
+
+- **`HermesAdapter.turn_id()`** falls back to `len(conversation_history) - 1`
+  when `context["turn_id"]` is absent, preventing stale `turn_id=0` collisions
+
+- **`hermes_hook.py:pre_llm_call()`** passes `session_id` and `turn_id` to
+  `engine.predict()` so `TurnRecord.turn_id` reflects actual conversation position
+
+### Fixed
+
+- **World model reward collapse**: `post_tool_use()` previously hardcoded
+  `continued=True, corrected=False` for every sample — 100% win_rate was
+  meaningless. Real signals now flow from `before_prediction()` via 1-turn delay.
+
+- **Token cost overflow**: old producers (`loom-hooks`, `yicenet-hooks`) emitted
+  `avg_tc ≈ 2,300,000` (raw token count, not normalized cost). Fixed in
+  `estimate_token_cost()` — now returns `[0, 1]` normalized float.
+
+- **Simplified Chinese not matched**: `_PRAISE_PATTERNS` only had Traditional
+  Chinese (`謝謝`); simplified `谢谢` never matched. Fixed by adding both scripts.
+
 ## [15.6.0] — 2026-06-16
 
 ### Added

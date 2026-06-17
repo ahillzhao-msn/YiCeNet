@@ -26,12 +26,22 @@ logs/
 checkpoints/yicenet_v[0-9]*.pt
 checkpoints/*_latest.pt
 
-# Data (regenerated)
+# Data (regenerated / runtime state)
 data/ds_eval*
 data/flywheel_buffer.jsonl
 data/metrics.db
 data/qwen_to_yicenet.json
 src/yicenet/data/qwen_to_yicenet.json
+state.json
+
+# Package lock (not pinned in this repo)
+uv.lock
+
+# Local Hermes agent runtime files
+.hermes/
+
+# Docs binary exports (track manually when updated)
+docs/*.mhtml
 
 # Build artifacts
 *.egg-info/
