@@ -231,15 +231,64 @@ def init_data_root(soul_path: str = "") -> None:
 
 # ── flywheel cron ──────────────────────────────────────────────────────────────
 
-def _flywheel_cmd() -> str:
-    return f'"{sys.executable}" -m yicenet.flywheel'
+def _install_flywheel_scripts() -> Path | None:
+    """Copy the environment-adaptive flywheel launcher to ~/.yicenet/.
+
+    Returns the path to the installed script, or None if neither script
+    could be placed.
+    """
+    from yicenet.config import yicenet_home
+    root = yicenet_home()
+    root.mkdir(parents=True, exist_ok=True)
+    src_dir = _project_root() / "scripts"
+
+    import platform
+    system = platform.system().lower()
+
+    if system == "windows":
+        src = src_dir / "flywheel-run.bat"
+        dst = root / "flywheel-run.bat"
+        if src.exists():
+            shutil.copy2(str(src), str(dst))
+            print(f"  ✓ {dst}")
+            return dst
+        # Alternate: check alongside installed package
+        pkg_src = Path(__file__).resolve().parent.parent.parent / "scripts" / "flywheel-run.bat"
+        if pkg_src.exists():
+            shutil.copy2(str(pkg_src), str(dst))
+            print(f"  ✓ {dst}")
+            return dst
+        return None
+
+    # Linux / macOS
+    src = src_dir / "flywheel-run.sh"
+    dst = root / "flywheel-run.sh"
+    if src.exists():
+        shutil.copy2(str(src), str(dst))
+        dst.chmod(0o755)
+        print(f"  ✓ {dst}")
+        return dst
+    pkg_src = Path(__file__).resolve().parent.parent.parent / "scripts" / "flywheel-run.sh"
+    if pkg_src.exists():
+        shutil.copy2(str(pkg_src), str(dst))
+        dst.chmod(0o755)
+        print(f"  ✓ {dst}")
+        return dst
+    return None
 
 
 def register_flywheel_cron(hours: int = 6) -> None:
     import platform
     system = platform.system().lower()
     name = "yicenet-flywheel"
-    cmd = _flywheel_cmd()
+
+    # Install the adaptive script first
+    script_path = _install_flywheel_scripts()
+    if script_path is None:
+        print(f"  ⚠ Flywheel script not found — registering raw command instead")
+        cmd = f'"{sys.executable}" -m yicenet.flywheel'
+    else:
+        cmd = str(script_path)
 
     if system in ("linux", "darwin"):
         schedule = f"0 */{max(1, hours)} * * *"

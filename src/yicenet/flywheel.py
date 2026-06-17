@@ -82,7 +82,7 @@ def _consume_external_buffer(buffer_path: Path) -> int:
 
     count = 0
     os.makedirs(os.path.dirname(buffer_path), exist_ok=True)
-    with open(buffer_path, "a") as f:
+    with open(buffer_path, "a", encoding="utf-8") as f:
         while FLYWHEEL_BUFFER:
             item = FLYWHEEL_BUFFER.pop(0)
             trajectory = item.get("trajectory", {})
@@ -350,7 +350,7 @@ def _update_world_model_v2(buffer_path: Path):
 
     # Load buffer
     samples = []
-    with open(buffer_path) as f:
+    with open(buffer_path, encoding="utf-8") as f:
         for line in f:
             samples.append(json.loads(line))
 
@@ -487,7 +487,7 @@ def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
 
     # Load buffer
     samples = []
-    with open(buffer_path) as f:
+    with open(buffer_path, encoding="utf-8") as f:
         for line in f:
             samples.append(json.loads(line))
 
@@ -609,7 +609,7 @@ def _record_evaluation(version: str, buffer_path: Path, checkpoint_path: str = "
     device = next(engine._model.parameters()).device
 
     samples = []
-    with open(buffer_path) as f:
+    with open(buffer_path, encoding="utf-8") as f:
         for line in f:
             samples.append(json.loads(line))
 
@@ -769,7 +769,7 @@ def _auto_promote(buffer_path: Path):
         return
 
     samples = []
-    with open(buffer_path) as f:
+    with open(buffer_path, encoding="utf-8") as f:
         for line in f:
             samples.append(json.loads(line))
 
