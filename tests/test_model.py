@@ -157,10 +157,9 @@ def test_full_model():
     # Verify param count
     counts = model.get_param_count()
     total = counts["total"]
+    assert 4_000_000 < total < 7_000_000, f"Unexpected param count: {total:,}"
     print(f"  ✓ YiCeNet forward: all {len(expected_keys)} outputs valid")
     print(f"  ✓ Total params: {total:,} (~{total/1e6:.1f}M)")
-    
-    return total
 
 
 def test_memory_footprint():
