@@ -21,8 +21,33 @@ class EngineProvider:
     def get_engine(cls):
         """Return the active engine, lazy-initializing on first call."""
         if cls._engine is None:
+            cls._apply_runtime_env()
             cls._engine = cls._build_engine()
         return cls._engine
+
+    @classmethod
+    def _apply_runtime_env(cls) -> None:
+        """Set TQDM_DISABLE / HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE from config.
+
+        Must run before the model is loaded (sentence-transformers reads these
+        at instantiation time). Defaults match config.yaml runtime defaults.
+        """
+        import os
+        rt: dict = {}
+        try:
+            from .config import yicenet_home
+            import yaml  # type: ignore
+            cfg_path = yicenet_home() / "config.yaml"
+            if cfg_path.exists():
+                rt = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}).get("runtime", {})
+        except Exception:
+            pass
+        if rt.get("transformers_offline", True):
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        if rt.get("hf_hub_offline", True):
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        if rt.get("tqdm_disable", True):
+            os.environ.setdefault("TQDM_DISABLE", "1")
 
     @classmethod
     def check_switch(cls) -> bool:

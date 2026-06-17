@@ -62,22 +62,6 @@ class HermesInstaller(PlatformInstaller):
     def _write_init_py(self) -> None:
         (_PLUGIN_DIR / "__init__.py").write_text(
             '"""YiCeNet Hermes plugin — lifecycle hooks."""\n'
-            "import os\n"
-            "from pathlib import Path\n\n"
-            "_cfg_path = Path.home() / '.yicenet' / 'config.yaml'\n"
-            "if _cfg_path.exists():\n"
-            "    try:\n"
-            "        import yaml\n"
-            "        _rt = yaml.safe_load(_cfg_path.read_text()) or {}\n"
-            "        _rt = _rt.get('runtime', {})\n"
-            "        if _rt.get('transformers_offline', True):\n"
-            "            os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')\n"
-            "        if _rt.get('hf_hub_offline', True):\n"
-            "            os.environ.setdefault('HF_HUB_OFFLINE', '1')\n"
-            "        if _rt.get('tqdm_disable', True):\n"
-            "            os.environ.setdefault('TQDM_DISABLE', '1')\n"
-            "    except Exception:\n"
-            "        pass\n\n"
             "def pre_llm_call(context):\n"
             "    from yicenet.tools.hermes_hook import pre_llm_call as _fn\n"
             "    return _fn(context)\n\n"
