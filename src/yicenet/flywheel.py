@@ -884,6 +884,15 @@ def _auto_promote(buffer_path: Path):
 
     active_wins = 0
     engine._model.eval()
+
+    # Load World Model once for reward evaluation
+    world_model = None
+    wm_path = CHECKPOINT_DIR / "world_model_best.pt"
+    if wm_path.exists():
+        from yicenet.world_model import WorldModelV2
+        world_model = WorldModelV2.load(str(wm_path), device)
+        world_model.eval()
+
     with torch.no_grad():
         for s in samples:
             ids, mask = encode(s["user_text"], max_len=128)
@@ -899,12 +908,9 @@ def _auto_promote(buffer_path: Path):
                 "abandoned": s.get("abandoned", False),
             }
             target_dist = project_to_hexagram_space(reward_sig)
-            from yicenet.world_model import WorldModelV2
-            wm_path = CHECKPOINT_DIR / "world_model_best.pt"
-            if wm_path.exists():
-                wm = WorldModelV2.load(str(wm_path), device)
+            if world_model is not None:
                 probes_t = out["probes"].to(device)
-                wm_pred, _ = wm(probes_t.unsqueeze(0), out["hexagram_idx"])
+                wm_pred, _ = world_model(probes_t.unsqueeze(0), out["hexagram_idx"])
                 reward_val = compute_hexagram_reward(
                     wm_pred.cpu(), target_dist.unsqueeze(0)
                 ).item()
