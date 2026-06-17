@@ -106,7 +106,7 @@ External Producer (submit_trajectory) ─┘
 ```
 
 - **Internal** — The cron-managed session DB scanner (backward compatible, unchanged)
-- **External** — `submit_trajectory()` memory buffer, consumed by the next flywheel run
+- **External** — `submit_trajectory()` writes directly to `flywheel_buffer.jsonl` via cross-platform file lock; survives process restarts
 - The RL training pipeline (`rl_train.py`) processes both sources identically
 
 The external API is non-fatal — YiCeNet not installed? `submit_trajectory()` simply does nothing. This lets Loom and other agents feed data without worrying about deployment order.
@@ -121,10 +121,10 @@ git clone https://github.com/ahillzhao-msn/YiCeNet.git
 cd YiCeNet
 
 # Download checkpoints from GitHub Releases
-# See https://github.com/ahillzhao-msn/YiCeNet/releases/tag/v18.0.0
+# See https://github.com/ahillzhao-msn/YiCeNet/releases/latest
 mkdir -p checkpoints
 # Download these files from the release Assets into checkpoints/:
-#   - yicenet_v15.pt   (base/seed model)
+#   - yicenet_v18.pt   (current best checkpoint)
 #   - minimal.pt       (minimal inference checkpoint)
 #   - world_model_best.pt
 #   - registry.json
@@ -216,11 +216,17 @@ YiCeNet/
 │   ├── world_model.py     # WorldModelV2: prediction → endogenous weight
 │   ├── value_net.py       # Value Network (41K params)
 │   ├── yicenet_engine.py  # Unified inference API
-│   ├── flywheel.py        # Online flywheel: session DB scan + external producer buffer (`submit_trajectory()`) → RL fine-tune
+│   ├── flywheel.py        # Flywheel: file-locked buffer → RL fine-tune
+│   ├── memory_bank.py     # MemoryBank + FileBackend (WAL JSONL persistence)
+│   ├── hook_engine/       # Platform-independent feedback pipeline
+│   │   ├── adapter.py     # PlatformAdapter Protocol
+│   │   ├── extractor.py   # FeedbackSignals, extract_feedback(), build_trajectory()
+│   │   └── orchestrator.py# HookOrchestrator: before_prediction / on_turn_complete
+│   ├── external_metrics.py# Satisfaction / token cost / CJK+EN pattern matching
 │   ├── config.py          # Configuration + hyperparameters
 │   ├── constants.py       # 64 hexagrams, I-Ching constants
 │   ├── tokenizer.py       # Qwen BPE tokenizer wrapper
-│   └── hermes_tool.py     # Agent tool integration
+│   └── tools/             # Platform hook implementations (claude_hook, hermes_hook)
 ├── scripts/               # Training & evaluation CLI
 ├── tests/                 # Test suite
 ├── data/                  # Training data (gitignored)
@@ -239,34 +245,28 @@ For a zero-effort setup where YiCeNet runs on **every turn without explicit tool
 
 ```bash
 # From the YiCeNet repo
-bash scripts/install/install-yicenet-hooks.sh
+python -m yicenet install --hermes
+python -m yicenet install --claude   # for Claude Code hooks
 ```
 
 What it does:
 
 | Hook | When | What | Effect |
 |------|------|------|--------|
-| `on_session_start` | Session begins | `yicenet_predict` | Establishes hexagram baseline |
-| `pre_llm_call` | Before every response | `yicenet_predict(user_msg)` | Injects hexagram context into prompt |
-| `pre_tool_call` | Before tool execution | Hexagram calibration | Aligns tool direction with hexagram (observe only) |
-| `post_tool_call` | After tool execution | Tool-level reward signal | Success/failure reward to flywheel |
-| `post_api_request` | After every API call | Accumulates token usage | First-hand cost data for reward |
-| `post_llm_call` | After every response | `feedback(reward_signal)` | Writes to flywheel training buffer |
-| `on_session_end` | Session ends | Logs metadata | Session wrap-up |
+| `pre_llm_call` | Before every response | `before_prediction()` → `engine.predict()` | Submits prior-turn feedback; injects hexagram context |
+| `post_tool_call` | After tool execution | Records tool turn in MemoryBank | Tracks tool usage in session |
+| `post_llm_call` | After every response | `on_turn_complete()` | Stores `response_snippet` for next turn's feedback extraction |
 
-**Three-Channel Flywheel:**
+**Feedback signal timing (1-turn delay):**
 
 ```
-通道1 (intrinsic):  yicenet-flywheel cron → scan_new_messages(Session DB)
-通道2 (via LOOM):   LOOM solidify → _loom_to_yicenet() → flywheel buffer
-通道3 (direct):     post_llm_call → feedback() → flywheel_buffer.jsonl
+Turn N:  pre_llm_call  → engine.predict() → store TurnRecord (MemoryBank)
+         post_llm_call → store response_snippet (FileBackend)
+
+Turn N+1: pre_llm_call → load TurnRecord → extract_feedback(prompt_N+1, turn_N)
+                       → corrected / praised / abandoned / satisfaction
+                       → submit_trajectory() → flywheel_buffer.jsonl
 ```
-
-Channel 1 is the foundation — YiCeNet's own intrinsic understanding via embedding-based learning from Session DB history. It works even when `predict()` is called standalone without an immediate response.
-
-Channel 2 is indirect — when LOOM is also installed, its `solidify()` already sends reward signals to YiCeNet.
-
-Channel 3 is this plugin — direct first-hand data that the Session DB cannot provide: accurate token costs, response length, model identity.
 
 All channels converge to `flywheel_buffer.jsonl`, consumed by the 6-hour flywheel cron for World Model + RL training.
 
