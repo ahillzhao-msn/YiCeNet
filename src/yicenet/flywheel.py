@@ -35,6 +35,63 @@ WM_FAST_TAU_DAYS = 3.0
 WM_ALPHA = 1.5
 WM_BETA = 0.3
 
+def _append_locked(path: Path, line: str) -> None:
+    """Append one JSONL line with a cross-platform exclusive lock.
+
+    Uses fcntl.flock on POSIX and msvcrt.locking on Windows so that
+    concurrent hook processes (Claude Code PostToolUse, Hermes pre_llm_call)
+    cannot interleave partial writes into the shared buffer file.
+    """
+    import sys
+    with open(path, "a", encoding="utf-8", buffering=1) as f:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                f.write(line)
+                f.flush()
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.write(line)
+                f.flush()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _rotate_buffer(buffer_path: Path) -> None:
+    """Archive the current buffer and start fresh after a successful training run.
+
+    Keeps the last KEEP_RECENT records in the live file so the next training
+    run always has some warm-start data. Older records go to a dated archive.
+
+    Design note: training functions intentionally use ALL buffer data with
+    power-law decay weighting — rotation is purely a file-size management
+    concern, not a "forget trained data" operation.
+    """
+    KEEP_RECENT = 500
+    if not buffer_path.exists():
+        return
+    lines = buffer_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if len(lines) <= KEEP_RECENT:
+        return  # small enough, nothing to do
+
+    archive_dir = buffer_path.parent / "archive"
+    archive_dir.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    archive_path = archive_dir / f"flywheel_buffer_{stamp}.jsonl"
+
+    # Write old records to archive
+    archive_path.write_text("".join(lines[:-KEEP_RECENT]), encoding="utf-8")
+    # Rewrite live file with only the recent tail
+    buffer_path.write_text("".join(lines[-KEEP_RECENT:]), encoding="utf-8")
+    print(f"    Buffer rotated: {len(lines) - KEEP_RECENT} records → {archive_path.name}, {KEEP_RECENT} kept")
+
+
 def submit_trajectory(data: dict) -> None:
     """標準介面——任何 Producer（Claude hook、Hermes hook、Loom）調用此函數投遞軌跡。
 
@@ -72,8 +129,8 @@ def submit_trajectory(data: dict) -> None:
     try:
         buf_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
         buf_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(buf_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        line = json.dumps(sample, ensure_ascii=False) + "\n"
+        _append_locked(buf_path, line)
     except Exception:
         pass  # never block the caller
 
@@ -306,6 +363,9 @@ def flywheel_run():
 
     # ── Step 7: Auto-promote ──
     _auto_promote(buffer_path)
+
+    # ── Rotate buffer after successful training ──
+    _rotate_buffer(buffer_path)
 
     # ── Update state ──
     state["total_samples"] += new_count
