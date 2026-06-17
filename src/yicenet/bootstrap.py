@@ -201,22 +201,22 @@ def ensure_checkpoints() -> bool:
 
 def init_data_root(soul_path: str = "") -> None:
     try:
-        from yicenet.config import yicenet_data_dir, DEFAULT_CONFIG_YAML
+        from yicenet.config import yicenet_home, DEFAULT_CONFIG_YAML
     except ImportError:
         print("  ⚠ yicenet not installed yet — skipping data root init")
         return
 
-    data_root = yicenet_data_dir()
+    root = yicenet_home()
     for sub in ("checkpoints", "data", "logs"):
-        (data_root / sub).mkdir(parents=True, exist_ok=True)
+        (root / sub).mkdir(parents=True, exist_ok=True)
 
     created: list[str] = []
-    cfg_path = data_root / "config.yaml"
+    cfg_path = root / "config.yaml"
     if not cfg_path.exists():
         cfg_path.write_text(DEFAULT_CONFIG_YAML, encoding="utf-8")
         created.append("config.yaml")
 
-    soul_dst = data_root / "SOUL.md"
+    soul_dst = root / "SOUL.md"
     if not soul_dst.exists():
         src = Path(soul_path) if soul_path and os.path.isfile(soul_path) else PROJECT / "SOUL-template.md"
         if src.exists():
