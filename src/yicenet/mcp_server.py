@@ -219,16 +219,6 @@ def registry_active() -> str:
 
 
 def main() -> None:
-    import os
-    from yicenet.config import load_user_config
-    rt = load_user_config().get("runtime", {})
-    if rt.get("transformers_offline", True):
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    if rt.get("hf_hub_offline", True):
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    if rt.get("tqdm_disable", True):
-        os.environ.setdefault("TQDM_DISABLE", "1")
-
     # Pre-warm heavy imports in the main thread BEFORE starting the asyncio event
     # loop.  FastMCP's stdio transport puts stdout/stdin into IOCP async mode on
     # Windows; any `import` executed inside a to_thread.run_sync worker thread

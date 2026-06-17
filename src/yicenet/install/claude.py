@@ -94,10 +94,7 @@ class ClaudeCodeInstaller(PlatformInstaller):
             '"""YiCeNet Claude Code hook runner.\n'
             "Dispatched by UserPromptSubmit / PostToolUse / Stop hooks.\n"
             'Reads event from YICENET_HOOK_EVENT env var or first argv.\n"""\n'
-            "import os, sys, json\n\n"
-            "os.environ.setdefault('HF_HUB_OFFLINE', '1')\n"
-            "os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')\n"
-            "os.environ.setdefault('TQDM_DISABLE', '1')\n"
+            "import sys\n\n"
             "# Reconfigure stdout to UTF-8 so CJK characters print on Windows.\n"
             "if hasattr(sys.stdout, 'reconfigure'):\n"
             "    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
