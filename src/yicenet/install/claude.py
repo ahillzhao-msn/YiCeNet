@@ -1,24 +1,16 @@
-"""ClaudeCodeInstaller — Option C hook-based integration (replaces MCP).
+"""ClaudeCodeInstaller — hook-based Claude Code integration.
 
-Architecture:
-  PreMessageSend hook  → yicenet.tools.claude_hook.pre_message_send()
-                         Calls EngineProvider.get_engine().prescribe() and
-                         injects hexagram context before Claude sees the message.
-  PostToolUse hook     → yicenet.tools.claude_hook.post_tool_use()
-                         Submits flywheel reward signal.
-  Stop hook            → yicenet.tools.claude_hook.stop()
-                         Flushes MemoryBank for the session.
+Registered hooks (settings.json):
+  UserPromptSubmit → before_prediction() [extract prior feedback + prescribe]
+  Stop             → on_turn_complete()  [store response_snippet for next turn]
 
-The hook scripts run inside the Hermes venv Python (which has torch +
-transformers + yicenet pre-installed). First call cold-starts the engine
-(~1-2s with local tokenizer cache); subsequent calls in the same OS session
-reuse the warm engine via EngineProvider's class-level singleton.
+PostToolUse is intentionally NOT registered: feedback signals require the
+next user message to be present; before_prediction() handles this at
+UserPromptSubmit time (1-turn delay design).
 
-Compared to MCP:
-  - No stdio subprocess per session
-  - No FastMCP JSON-over-pipe overhead
-  - Context injected automatically — Claude never needs to call a tool
-  - Warm engine is shared across all hook invocations in the same process
+The hook script runs inside the Hermes venv Python (torch + transformers +
+yicenet pre-installed). Each invocation is a short-lived subprocess; the
+FileBackend (JSONL WAL) bridges state between UserPromptSubmit and Stop.
 """
 from __future__ import annotations
 
