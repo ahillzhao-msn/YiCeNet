@@ -7,7 +7,9 @@ Called by the hook script installed by ClaudeCodeInstaller:
   stop()              — Stop: flush MemoryBank for the session
 
 Hook input arrives on stdin as JSON (Claude Code hook payload format).
-Output to stdout is injected as context before Claude sees the message.
+|Output to stdout is injected into <user-prompt-submit-hook> context.
+|  Line 1: compact label (plain text, user-visible)
+|  Line 2: JSON metadata (Claude reads prescription, env_confidence, etc.)
 """
 from __future__ import annotations
 
@@ -17,12 +19,13 @@ import os
 import sys
 import datetime
 
-# Windows cp1252 stdout rejects CJK characters; reconfigure to UTF-8 globally.
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+# Windows cp1252 stdout/stderr rejects CJK characters; reconfigure to UTF-8 globally.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def _session_id(payload: dict) -> str:
@@ -85,6 +88,10 @@ def pre_message_send() -> None:
             chain = get_memory_bank().get_hexagram_history(session_id)
         label = display.render(result, chain=chain)
 
+        # ── Line 1: stdout → compact label (plain text, user-visible) ──
+        print(label, flush=True)
+
+        # ── Line 2: stdout → JSON metadata (Claude reads from context) ──
         output = {
             "yicenet": {
                 "session_id": session_id,
@@ -97,7 +104,7 @@ def pre_message_send() -> None:
                 "prescription": prescription,
             }
         }
-        print(json.dumps(output, ensure_ascii=False))
+        print(json.dumps(output, ensure_ascii=False), flush=True)
 
     except Exception:
         # Never block the user — fail silently
