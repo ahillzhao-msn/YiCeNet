@@ -11,6 +11,7 @@
 #   SOUL-template.md                  — YiCeNet identity template
 #   install-claudecode-hooks.sh       — Claude Code hook installer
 #   install-hermes-hooks.sh          — Hermes hook installer
+#   flywheel-run.sh / .bat           — Environment-adaptive flywheel launcher
 #
 # Stable names (yicenet_base.pt, world_model.pt) allow yicenet-bootstrap
 # to auto-download from /releases/latest/download/ without knowing the version.
@@ -149,6 +150,11 @@ jobs:
             [ -f "$sh" ] && cp "$sh" release-assets/ && echo "  + $(basename $sh)" || echo "  · $(basename $sh) not found"
           done
 
+          # ── Flywheel launcher scripts (environment-adaptive) ──
+          for f in scripts/flywheel-run.sh scripts/flywheel-run.bat; do
+            [ -f "$f" ] && cp "$f" release-assets/ && echo "  + $(basename $f)" || echo "  · $f not found"
+          done
+
           echo ""
           echo "=== Final release assets ==="
           ls -lah release-assets/
@@ -187,6 +193,7 @@ jobs:
             | `SOUL-template.md` | — | YiCeNet identity template (`~/.yicenet/SOUL.md`) |
             | `install-claudecode-hooks.sh` | — | Claude Code hook + MCP auto-installer |
             | `install-hermes-hooks.sh` | — | Hermes plugin installer |
+            | `flywheel-run.sh` / `.bat` | — | Environment-adaptive flywheel launcher |
 
             ---
 
@@ -210,3 +217,5 @@ jobs:
             release-assets/SOUL-template.md
             release-assets/install-claudecode-hooks.sh
             release-assets/install-hermes-hooks.sh
+            release-assets/flywheel-run.sh
+            release-assets/flywheel-run.bat
