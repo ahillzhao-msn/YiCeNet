@@ -47,10 +47,13 @@ class HermesInstaller(PlatformInstaller):
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _hermes_python(self) -> str | None:
+        _local_app = Path(os.environ.get("LOCALAPPDATA", ""))
         for candidate in [
             _HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
             _HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python3",
             _HERMES_HOME / ".venv" / "bin" / "python3",
+            _local_app / "hermes" / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+            _local_app / "hermes" / "hermes-agent" / "venv" / "bin" / "python3",
         ]:
             if candidate.exists():
                 return str(candidate)
