@@ -121,8 +121,9 @@ class ClaudeCodeInstaller(PlatformInstaller):
             entries.append(new_entry)
 
         _ensure_hook("UserPromptSubmit", "pre")
-        _ensure_hook("PostToolUse", "post_tool")
         _ensure_hook("Stop", "stop")
+        # PostToolUse removed: feedback signals require the next user message
+        # to be present; before_prediction() in UserPromptSubmit handles this.
 
         _SETTINGS.write_text(
             json.dumps(settings, indent=2, ensure_ascii=False),
