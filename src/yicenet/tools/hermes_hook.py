@@ -13,6 +13,8 @@ Display injection:
 """
 from __future__ import annotations
 
+import sys
+
 
 def pre_llm_call(context: dict) -> dict | None:
     """Inject YiCeNet hexagram context before the LLM call."""
@@ -35,6 +37,8 @@ def pre_llm_call(context: dict) -> dict | None:
             chain = get_memory_bank().get_hexagram_history(session_id)
 
         rendered = display.render(result, chain=chain)
+        sys.stderr.write(rendered + "\n")
+        sys.stderr.flush()
         return {"yicenet_context": rendered}
     except Exception:
         return None
