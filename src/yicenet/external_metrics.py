@@ -13,31 +13,56 @@ from pathlib import Path
 from typing import Optional
 
 
-# 滿意度關鍵詞
+# ── Feedback signal patterns ───────────────────────────────────────────────────
+# ASCII patterns use \b word boundaries.
+# CJK patterns omit \b: Chinese/Japanese have no ASCII word boundaries,
+# and re.search without anchors is correct for intra-word substring matching.
+
 _PRAISE_PATTERNS = [
-    r"\b(good|great|perfect|excellent|amazing|wonderful|nice|awesome)\b",
-    r"\b(正確|對|好|完美|讚|厲害|不錯)\b",
-    r"\b(thanks|thank you|ty|thx|cheers|appreciate)\b",
-    r"\b(謝謝|感謝|多謝)\b",
+    # English — affirmative / appreciative
+    r"\b(good|great|perfect|excellent|amazing|wonderful|nice|awesome|brilliant|fantastic|superb|outstanding)\b",
+    r"\b(well done|well said|spot on|exactly right|nailed it|love it|that works)\b",
+    r"\b(thanks|thank you|ty|thx|cheers|appreciate|appreciated|that helped|very helpful)\b",
+    # Traditional Chinese
+    r"(正確|對|完美|讚|厲害|不錯|真棒|太棒了|很好|非常好|完全正確|就是這樣|你說得對|說得好)",
+    r"(謝謝|感謝|多謝|謝了|感謝你|謝謝你|辛苦了|辛苦)",
+    # Simplified Chinese
+    r"(正确|完美|赞|厉害|不错|真棒|太棒了|很好|非常好|完全正确|就是这样|你说得对|说得好)",
+    r"(谢谢|感谢|多谢|谢了|感谢你|谢谢你|辛苦了|辛苦)",
+    # Colloquial (works for both scripts)
+    r"(太好了|好棒|牛逼|牛|6啊|666|哈哈好|对对|好的好的)",
 ]
 
 _CORRECTION_PATTERNS = [
-    r"\b(no|wrong|not|incorrect|false|mistake|error|bad)\b",
-    r"\b(不對|錯了|錯誤|不是|不對吧|你錯了)\b",
-    r"\b(that's not|that is not|this is wrong)\b",
-    r"\b(重新|再來|重做|換一個)\b",
+    # English — explicit negation / correction
+    r"\b(no|wrong|incorrect|false|mistake|error|nope|nah|not right|not quite)\b",
+    r"\b(that's not|that is not|this is wrong|you're wrong|you are wrong|actually no|hold on|wait no)\b",
+    r"\b(redo|retry|try again|fix this|fix it|do it again|start over)\b",
+    # Traditional Chinese
+    r"(不對|錯了|錯誤|不是|不對吧|你錯了|說錯了|理解錯了|不是這樣|不對啊)",
+    r"(重新|再來|重做|換一個|重試|再試一次|再改改)",
+    # Simplified Chinese
+    r"(不对|错了|错误|不是|不对吧|你错了|说错了|理解错了|不是这样|不对啊)",
+    r"(重新|再来|重做|换一个|重试|再试一次|再改改|不对不对)",
 ]
 
 _COMPLETION_PATTERNS = [
-    r"\b(yes|ok|okay|done|got it|understood|copied|fine)\b",
-    r"\b(好|行|可以|明白了|收到|了解)\b",
-    r"\b(繼續|接著|下一步|next|continue)\b",
-    r"\b(意思|就是說|也就是|所以)\b",  # 理解後的進一步提問
+    # English — acknowledgment / continuation
+    r"\b(yes|ok|okay|done|got it|understood|copied|fine|got|sure|agreed|correct|right|clear|makes sense|i see)\b",
+    r"\b(continue|next|proceed|go on|go ahead|move on|keep going|carry on)\b",
+    # Traditional/Simplified Chinese acknowledgment (same characters for both)
+    r"(好|行|可以|明白|明白了|收到|了解|懂了|知道了|嗯|嗯嗯|对对|知道)",
+    r"(繼續|接著|下一步|好吧|没问题|沒問題|继续|好的)",
+    r"(意思|就是說|也就是|所以|就是说|也就是说)",  # inferential follow-up signals understanding
 ]
 
 _ABANDON_PATTERNS = [
-    r"\b(bye|goodbye|exit|quit|end|stop|done for now)\b",
-    r"\b(再見|結束|沒事了|先這樣)\b",
+    # English
+    r"\b(bye|goodbye|exit|quit|end|stop here|that's all|that's it|all done|no more|enough|i'm done|that will do|cya)\b",
+    # Traditional Chinese
+    r"(再見|結束|沒事了|先這樣|好了|算了|不用了|到此為止|先這樣吧|就這樣)",
+    # Simplified Chinese
+    r"(再见|结束|没事了|先这样|好了|算了|不用了|到此为止|先这样吧|就这样)",
 ]
 
 

@@ -113,8 +113,12 @@ class FileBackend:
     def _path(self, session_id: str) -> Path:
         return self._dir / f"{session_id}.jsonl"
 
-    def append(self, session_id: str, record: TurnRecord) -> None:
+    def _append_line(self, session_id: str, obj: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
+        with open(self._path(session_id), "a", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+    def append(self, session_id: str, record: TurnRecord) -> None:
         entry: dict = {
             "turn_id": record.turn_id,
             "hexagram_id": record.hexagram_id,
@@ -127,57 +131,86 @@ class FileBackend:
             entry["vector_b64"] = base64.b64encode(
                 record.encoder_output.astype(np.float32).tobytes()
             ).decode("ascii")
-        with open(self._path(session_id), "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self._append_line(session_id, entry)
 
     def update(self, session_id: str, turn_id: int, metadata: dict) -> None:
-        """Merge metadata into a specific turn's entry (rewrites the file)."""
-        path = self._path(session_id)
-        if not path.exists():
+        """Merge metadata via an O(1) WAL patch line (no file rewrite)."""
+        if not self._path(session_id).exists():
             return
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        updated = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if obj.get("turn_id") == turn_id:
-                    obj.setdefault("metadata", {}).update(metadata)
-            except (json.JSONDecodeError, KeyError):
-                pass
-            updated.append(json.dumps(obj, ensure_ascii=False))
-        path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+        self._append_line(session_id, {"_patch": True, "turn_id": turn_id, "metadata": metadata})
 
     def load(self, session_id: str) -> list[TurnRecord]:
+        """Read all lines, merge _patch entries into their base records."""
         path = self._path(session_id)
         if not path.exists():
             return []
-        records: list[TurnRecord] = []
+        bases: dict[int, dict] = {}   # turn_id → raw obj
+        patches: dict[int, list[dict]] = {}  # turn_id → list of patch dicts
+        order: list[int] = []
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
-                vector = np.zeros(384, dtype=np.float32)
-                if "vector_b64" in obj:
-                    import base64
-                    vector = np.frombuffer(
-                        base64.b64decode(obj["vector_b64"]), dtype=np.float32
-                    ).copy()
-                records.append(TurnRecord(
-                    turn_id=int(obj["turn_id"]),
-                    encoder_output=vector,
-                    hexagram_id=int(obj["hexagram_id"]),
-                    summary=obj.get("summary", ""),
-                    timestamp=float(obj.get("timestamp", 0.0)),
-                    metadata=obj.get("metadata", {}),
-                ))
+                tid = int(obj.get("turn_id", -1))
+                if obj.get("_patch"):
+                    patches.setdefault(tid, []).append(obj.get("metadata", {}))
+                else:
+                    if tid not in bases:
+                        order.append(tid)
+                    bases[tid] = obj
             except Exception:
                 continue
+
+        records: list[TurnRecord] = []
+        for tid in order:
+            obj = bases[tid]
+            merged_meta = dict(obj.get("metadata", {}))
+            for patch_meta in patches.get(tid, []):
+                merged_meta.update(patch_meta)
+            vector = np.zeros(384, dtype=np.float32)
+            if "vector_b64" in obj:
+                import base64
+                vector = np.frombuffer(
+                    base64.b64decode(obj["vector_b64"]), dtype=np.float32
+                ).copy()
+            records.append(TurnRecord(
+                turn_id=tid,
+                encoder_output=vector,
+                hexagram_id=int(obj["hexagram_id"]),
+                summary=obj.get("summary", ""),
+                timestamp=float(obj.get("timestamp", 0.0)),
+                metadata=merged_meta,
+            ))
         return records
+
+    def compact(self, session_id: str) -> None:
+        """Rewrite the session file with patches merged into base records.
+
+        Removes accumulated patch lines so load() stays O(n) even for
+        long-lived daemon sessions.  Called from cleanup_stale().
+        """
+        records = self.load(session_id)
+        if not records:
+            return
+        path = self._path(session_id)
+        lines: list[str] = []
+        for r in records:
+            entry: dict = {
+                "turn_id": r.turn_id,
+                "hexagram_id": r.hexagram_id,
+                "summary": r.summary,
+                "timestamp": r.timestamp,
+                "metadata": r.metadata,
+            }
+            if self._store_vectors and r.encoder_output is not None:
+                import base64
+                entry["vector_b64"] = base64.b64encode(
+                    r.encoder_output.astype(np.float32).tobytes()
+                ).decode("ascii")
+            lines.append(json.dumps(entry, ensure_ascii=False))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def delete(self, session_id: str) -> None:
         try:
@@ -192,11 +225,11 @@ class FileBackend:
             return []
 
     def cleanup_stale(self, max_age_hours: float = 48.0) -> int:
-        """Delete session files not modified in the last max_age_hours.
+        """Delete session files older than max_age_hours; compact the rest.
 
-        Called once at process startup to prevent unbounded file growth.
-        Hook sessions older than 48 h are definitively closed; no new
-        hook for that session_id will reload them.
+        Called once at process startup.  Sessions older than the TTL are
+        definitively closed (no hook will reload them).  Younger sessions
+        get compact() so accumulated WAL patch lines don't bloat load().
         """
         import time
         cutoff = time.time() - max_age_hours * 3600
@@ -207,6 +240,8 @@ class FileBackend:
                     if p.stat().st_mtime < cutoff:
                         p.unlink()
                         deleted += 1
+                    else:
+                        self.compact(p.stem)  # fold WAL patches into base records
                 except OSError:
                     pass
         except Exception:
