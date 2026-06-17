@@ -9,8 +9,20 @@ from pathlib import Path
 
 from .base import PlatformInstaller
 
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-_PLUGIN_DIR = _HERMES_HOME / "plugins" / "yicenet-hooks"
+
+def _hermes_home() -> Path:
+    """Derive Hermes home from sys.executable venv path.
+
+    Expects: <HERMES_HOME>/hermes-agent/venv/{Scripts|bin}/python
+    Falls back to HERMES_HOME env var if the structure doesn't match.
+    """
+    exe = Path(sys.executable).resolve()
+    # exe.parents: [Scripts|bin, venv, hermes-agent, HERMES_HOME, ...]
+    if len(exe.parents) >= 4 and exe.parents[2].name == "hermes-agent":
+        return exe.parents[3]
+    if os.environ.get("HERMES_HOME"):
+        return Path(os.environ["HERMES_HOME"])
+    return Path.home() / ".hermes"
 
 
 class HermesInstaller(PlatformInstaller):
@@ -19,49 +31,35 @@ class HermesInstaller(PlatformInstaller):
         return shutil.which("hermes") is not None
 
     def install_package(self, editable_path: Path = None) -> bool:
-        python = self._hermes_python()
-        if not python:
-            return False
         pkg = str(editable_path) if editable_path else "yicenet"
         flag = ["-e"] if editable_path else []
         r = subprocess.run(
-            [python, "-m", "pip", "install", "--quiet", *flag, pkg],
+            [sys.executable, "-m", "pip", "install", "--quiet", *flag, pkg],
             capture_output=True,
         )
         return r.returncode == 0
 
     def register_hooks(self) -> None:
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        (_PLUGIN_DIR / "plugin.yaml").write_text(
+        plugin_dir = _hermes_home() / "plugins" / "yicenet-hooks"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
             "name: yicenet-hooks\n"
             "version: '1'\n"
             "hooks: [pre_llm_call, post_tool_call, post_llm_call]\n",
             encoding="utf-8",
         )
-        self._write_init_py()
+        self._write_init_py(plugin_dir)
 
     def unregister(self) -> None:
-        if _PLUGIN_DIR.exists():
-            shutil.rmtree(_PLUGIN_DIR)
+        plugin_dir = _hermes_home() / "plugins" / "yicenet-hooks"
+        if plugin_dir.exists():
+            shutil.rmtree(plugin_dir)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _hermes_python(self) -> str | None:
-        _local_app = Path(os.environ.get("LOCALAPPDATA", ""))
-        for candidate in [
-            _HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
-            _HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python3",
-            _HERMES_HOME / ".venv" / "bin" / "python3",
-            _local_app / "hermes" / "hermes-agent" / "venv" / "Scripts" / "python.exe",
-            _local_app / "hermes" / "hermes-agent" / "venv" / "bin" / "python3",
-        ]:
-            if candidate.exists():
-                return str(candidate)
-        return None
-
-    def _write_init_py(self) -> None:
+    def _write_init_py(self, plugin_dir: Path) -> None:
         stub = Path(__file__).parent.parent / "tools" / "_hermes_stub.py"
-        (_PLUGIN_DIR / "__init__.py").write_text(
+        (plugin_dir / "__init__.py").write_text(
             stub.read_text(encoding="utf-8"),
             encoding="utf-8",
         )

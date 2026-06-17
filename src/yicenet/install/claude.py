@@ -8,14 +8,14 @@ PostToolUse is intentionally NOT registered: feedback signals require the
 next user message to be present; before_prediction() handles this at
 UserPromptSubmit time (1-turn delay design).
 
-The hook script runs inside the Hermes venv Python (torch + transformers +
-yicenet pre-installed). Each invocation is a short-lived subprocess; the
-FileBackend (JSONL WAL) bridges state between UserPromptSubmit and Stop.
+The hook script runs in whichever Python has yicenet installed — typically
+the venv this installer is invoked from (sys.executable). Each invocation
+is a short-lived subprocess; the FileBackend (JSONL WAL) bridges state
+between UserPromptSubmit and Stop.
 """
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -26,14 +26,6 @@ from .base import PlatformInstaller
 _CLAUDE_DIR = Path.home() / ".claude"
 _HOOKS_DIR = _CLAUDE_DIR / "hooks"
 _SETTINGS = _CLAUDE_DIR / "settings.json"
-
-# Hermes venv Python — has torch/transformers/yicenet installed
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-_HERMES_PYTHON_CANDIDATES = [
-    _HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
-    _HERMES_HOME / "hermes-agent" / "venv" / "bin" / "python3",
-    _HERMES_HOME / ".venv" / "bin" / "python3",
-]
 
 
 class ClaudeCodeInstaller(PlatformInstaller):
@@ -76,10 +68,7 @@ class ClaudeCodeInstaller(PlatformInstaller):
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _python(self) -> str | None:
-        for p in _HERMES_PYTHON_CANDIDATES:
-            if p.exists():
-                return str(p)
-        return sys.executable  # fallback: current Python
+        return sys.executable
 
     def _hook_script_content(self) -> str:
         runner = Path(__file__).parent.parent / "tools" / "_claude_runner.py"

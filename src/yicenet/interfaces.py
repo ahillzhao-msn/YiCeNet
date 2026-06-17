@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 if TYPE_CHECKING:
-    from .types import PredictionResult, Prescription, EnvAnalysis
+    from .types import PredictionResult, EnvAnalysis
 
 
 # ── Phase 2: Core component interfaces ────────────────────────────────────────
@@ -118,16 +118,6 @@ class IEngine(ABC):
         deterministic: bool = False,
         environment: Optional[dict] = None,
     ) -> "PredictionResult": ...
-
-    @abstractmethod
-    def prescribe(
-        self,
-        task_text: str,
-        session_id: str,
-        turn_id: int = 0,
-        turn_summary: str = "",
-        environment: Optional[dict] = None,
-    ) -> "Prescription": ...
 
     @abstractmethod
     def analyze(

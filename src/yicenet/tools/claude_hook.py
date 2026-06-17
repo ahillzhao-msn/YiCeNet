@@ -156,18 +156,15 @@ def pre_message_send() -> None:
             "session_turn": turn_id,
         }
 
-        prescription = engine.prescribe(
-            task_text=prompt or "general task",
-            session_id=session_id,
-            turn_id=turn_id,
-            environment=env,
-        ).to_dict()
-
         result = engine.predict(
             prompt or "general task",
             temperature=0.1,
             environment=env,
+            session_id=session_id,
+            turn_id=turn_id,
+            return_prescription=True,
         )
+        prescription = result.get("context_prescription", {})
 
         display = ProviderRegistry.default().display
         chain = None
