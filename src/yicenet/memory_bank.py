@@ -56,9 +56,11 @@ class SessionBuffer:
         self.turns.append(record)
 
     def get_keys(self) -> np.ndarray:
-        if not self.turns:
-            return np.empty((0, 384), dtype=np.float32)
-        return np.stack([t.encoder_output for t in self.turns])
+        # Skip turns whose encoder_output is a placeholder (size==0 means not stored).
+        valid = [t.encoder_output for t in self.turns if t.encoder_output.size > 0]
+        if not valid:
+            return np.empty((0, 0), dtype=np.float32)
+        return np.stack(valid)
 
     def get_metadata(self) -> list[dict]:
         return [
@@ -169,7 +171,7 @@ class FileBackend:
             merged_meta = dict(obj.get("metadata", {}))
             for patch_meta in patches.get(tid, []):
                 merged_meta.update(patch_meta)
-            vector = np.zeros(384, dtype=np.float32)
+            vector = np.zeros(0, dtype=np.float32)  # placeholder; size==0 signals "not stored"
             if "vector_b64" in obj:
                 import base64
                 vector = np.frombuffer(
@@ -364,7 +366,7 @@ class MemoryBank:
     ) -> tuple[np.ndarray, list[dict]]:
         buf = self._sessions.get(session_id)
         if buf is None or not buf.turns:
-            return np.empty((0, 384), dtype=np.float32), []
+            return np.empty((0, 0), dtype=np.float32), []
         return buf.get_keys(), buf.get_metadata()
 
     def get_turn_count(self, session_id: str) -> int:

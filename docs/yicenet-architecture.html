@@ -61,7 +61,7 @@ text{font-family:'Inter','Noto Sans SC',sans-serif;font-size:11px;fill:#e6edf3}
 <rect x="680" y="35" width="190" height="60" class="box" rx="6"/>
 <text x="690" y="55" class="title-text">Python API</text>
 <text x="690" y="70" class="sub-text">from yicenet import YiCeNetEngine</text>
-<text x="690" y="83" class="sub-text">predict() / prescribe() / analyze()</text>
+<text x="690" y="83" class="sub-text">predict() / analyze()</text>
 
 <!-- EngineProvider -->
 <rect x="240" y="115" width="340" height="50" class="box-accent" rx="6"/>
@@ -81,11 +81,9 @@ text{font-family:'Inter','Noto Sans SC',sans-serif;font-size:11px;fill:#e6edf3}
 <text x="30" y="233" class="title-text" fill="#58a6ff">YiCeNetEngine</text>
 <text x="30" y="250" class="sub-text">yicenet_engine.py · DI via ProviderRegistry</text>
 <line x1="30" y1="258" x2="340" y2="258" stroke="#30363d"/>
-<text x="30" y="274" class="sub-text">predict() → PredictionResult (7ms)</text>
-<text x="30" y="290" class="sub-text">prescribe() → Prescription (5ms)</text>
-<text x="30" y="306" class="sub-text">analyze() → EnvAnalysis (3ms)</text>
-<text x="30" y="322" class="sub-text">switch_model() · predict_structured()</text>
-<text x="30" y="340" class="sub-text">return_prescription: deprecated</text>
+<text x="30" y="274" class="sub-text">predict() → PredictionResult (7ms) [+prescription via return_prescription=True]</text>
+<text x="30" y="290" class="sub-text">analyze() → EnvAnalysis (3ms)</text>
+<text x="30" y="306" class="sub-text">switch_model() · predict_structured()</text>
 
 <!-- ProviderRegistry -->
 <rect x="400" y="210" width="260" height="150" class="box" rx="6"/>
@@ -186,7 +184,7 @@ text{font-family:'Inter','Noto Sans SC',sans-serif;font-size:11px;fill:#e6edf3}
 <line x1="30" y1="720" x2="970" y2="720" stroke="#30363d"/>
 <text x="30" y="738" class="sub-text">1️⃣ 接口优于实现 ✅ 7 ABC (ITokenizer/IEncoder/IRouter/IValueNetwork/IMemoryBank/IEngine/IDisplay)</text>
 <text x="30" y="756" class="sub-text">2️⃣ 依赖注入 ⚠️ tokenizer/memory/display 走 ProviderRegistry · model 仍 self.new (Phase 3 局限)</text>
-<text x="30" y="774" class="sub-text">3️⃣ 职责分离 ✅ predict/prescribe/analyze + DeprecationWarning · return_prescription deprecated</text>
+<text x="30" y="774" class="sub-text">3️⃣ 职责分离 ✅ predict(return_prescription=True) + analyze() · prescribe() 已移除</text>
 <text x="30" y="792" class="sub-text">4️⃣ 去重 ✅ EngineProvider 消灭 hermes_tool + mcp 重复 _get_engine()</text>
 
 <!-- 版本历史 -->

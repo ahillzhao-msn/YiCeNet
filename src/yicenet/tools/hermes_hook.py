@@ -138,6 +138,7 @@ def pre_llm_call(context: dict) -> dict | None:
             temperature=0.1,
             session_id=session_id,
             turn_id=turn_id,
+            return_prescription=True,
         )
 
         display = ProviderRegistry.default().display
@@ -164,11 +165,12 @@ def post_tool_call(context: dict) -> None:
             return
         from yicenet.engine_provider import EngineProvider
         engine = EngineProvider.get_engine()
-        engine.prescribe(
-            task_text=f"tool:{tool_name}",
+        engine.predict(
+            f"tool:{tool_name}",
+            temperature=0.1,
             session_id=session_id,
             turn_id=turn_id,
-            turn_summary=f"tool_call:{tool_name}",
+            return_prescription=True,
         )
     except Exception:
         pass

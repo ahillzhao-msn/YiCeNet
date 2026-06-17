@@ -45,7 +45,7 @@
 
 2. **依赖注入而非 self.new** — 构造时接收组件接口，运行时通过注册表组合。不写 `self._model = YiCeNet()`。
 
-3. **职责分离: 一个方法做一件事** — predict() 做预测，prescribe() 做上下文处方，analyze() 做环境分析。不通过 `return_prescription` 标志位在同一方法内注入副作用。
+3. **职责分离: 一个方法做一件事** — predict() 做预测（含上下文处方，通过 `return_prescription=True` 激活），analyze() 做环境分析。prescribe() 已合并回 predict() 以消除重复编码开销。
 
 4. **一处定义，多处引用** — 重复 >10 行即提取共享模块。hermes_tool 和 mcp_server 的 `_get_engine()` 是反面案例。
 
@@ -364,9 +364,7 @@ class IMemoryBank(ABC):
 class IEngine(ABC):
     """核心推理引擎（门面模式，非 God Class）。"""
     @abstractmethod
-    def predict(self, task_brief: str, temperature: float = 0.1, deterministic: bool = False, environment: dict | None = None) -> PredictionResult: ...
-    @abstractmethod
-    def prescribe(self, task_text: str, session_id: str, turn_id: int = 0, turn_summary: str = "") -> Prescription: ...
+    def predict(self, task_brief: str, temperature: float = 0.1, deterministic: bool = False, environment: dict | None = None, return_prescription: bool = False) -> PredictionResult: ...
     @abstractmethod
     def analyze(self, task_brief: str) -> EnvAnalysis: ...
     @abstractmethod
@@ -441,19 +439,6 @@ class YiCeNetEngine:
             context_status=status,
             context_hint=hint,
         )
-
-    def prescribe(self, task_text: str, session_id: str,
-                  turn_id: int = 0, turn_summary: str = "") -> Prescription:
-        """上下文处方 = predict + memory + cross-attention。
-           调用者显式调用，不再通过 return_prescription 标志位。"""
-        # predict 复用作编码
-        self._memory.init_session(session_id)
-        result = self.predict(task_text)
-        h = ...  # 复用上次编码结果或重新编码
-        self._memory.store_turn(session_id, turn_id, h, result["hexagram_id"], turn_summary)
-        keys, meta = self._memory.get_session_keys(session_id)
-        weights = CrossAttention.compute(h.squeeze(), keys)
-        return ContextPrescription.generate(weights, meta, result["probes"])
 
     def analyze(self, task_brief: str) -> EnvAnalysis:
         """快速环境分析（~3ms）。仅编码+探针，不走路由。"""
@@ -737,12 +722,14 @@ from yicenet import YiCeNetEngine
 engine = YiCeNetEngine()
 result = engine.predict("解释这段代码")          # ~7ms
 
-# 带上下文的完整路径
-prescription = engine.prescribe(
-    task_text="重构 API 路由",
+# 带上下文处方的完整路径
+result = engine.predict(
+    "重构 API 路由",
     session_id="session_abc123",
     turn_id=5,
-)                                               # ~12ms
+    return_prescription=True,
+)
+prescription = result.get("context_prescription", {})  # ~12ms
 
 # 快速环境分析
 analysis = engine.analyze("搜索文档")           # ~3ms
@@ -784,9 +771,9 @@ analysis = engine.analyze("搜索文档")           # ~3ms
 
 | 任务 | 影响 | 行数 |
 |------|------|------|
-| `predict()` 拆出 `prescribe()` + `analyze()` | 237 行 → 3 个不到 80 行的方法 | -60 |
+| `predict()` 拆出 `analyze()`；prescribe() 合并回 predict() | 职责明确，消除重复编码 | -30 |
 | `config.py` 拆为三个 dataclass | ModelArchConfig + TrainingConfig + PathConfig | -20/+25 |
-| 移除 `return_prescription` 标志位 | predict() 不再隐式做 prescription | -5 |
+| `return_prescription=True` 激活上下文处方 | 单次编码复用，无额外开销 | |
 | **测试**: 45 pytest 通过 | 方法拆分不影响结果 | |
 
 ### Phase 5: 平台抽象
