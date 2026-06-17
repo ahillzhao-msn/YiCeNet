@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install-claudecode-hooks.sh — Full Claude Code integration for YiCeNet.
+# install-claudecode-hooks.sh — Claude Code hook integration for YiCeNet.
 #
-# Delegates core setup (pip install, checkpoints, mcpServers entry) to
-# yicenet-bootstrap --target claude-code, then adds the Claude Code-specific
-# lifecycle hooks (PostToolUse, Stop) for flywheel reward signal collection.
+# Installs the UserPromptSubmit / PostToolUse / Stop lifecycle hooks that
+# inject hexagram context and collect flywheel reward signals.
+# Does NOT touch MCP — use install-mcp-server.sh for that.
 #
 # Usage:
 #   bash scripts/install/install-claudecode-hooks.sh
@@ -130,11 +130,12 @@ which yicenet-serve >/dev/null 2>&1 \
     || echo "⚠  yicenet-serve not on PATH — ensure pip install target is in PATH"
 
 echo ""
-echo "Done. YiCeNet is fully wired into Claude Code."
+echo "Done. YiCeNet hooks wired into Claude Code."
 echo ""
-echo "  MCP server:  yicenet-serve  (stdio — Claude Code manages the process)"
-echo "  Tools:       yicenet_attend · yicenet_predict · yicenet_feedback · yicenet_switch"
-echo "  Hooks:       PostToolUse → flywheel,  Stop → MemoryBank flush"
-echo "  Session ID:  sha256(cwd + YYYY-MM-DD)[:12]"
+echo "  Hooks:      UserPromptSubmit → hexagram context inject"
+echo "              PostToolUse      → flywheel reward signal"
+echo "              Stop             → MemoryBank session flush"
+echo "  Session ID: sha256(cwd + YYYY-MM-DD)[:12]"
 echo ""
+echo "  For MCP server setup, run: bash scripts/install/install-mcp-server.sh --target claude-code"
 echo "  Restart Claude Code to activate."

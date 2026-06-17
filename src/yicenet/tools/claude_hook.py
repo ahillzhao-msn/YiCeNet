@@ -88,6 +88,10 @@ def pre_message_send() -> None:
             chain = get_memory_bank().get_hexagram_history(session_id)
         label = display.render(result, chain=chain)
 
+        # ── stderr → visible in terminal for the user ──
+        sys.stderr.write(label + "\n")
+        sys.stderr.flush()
+
         # ── Line 1: stdout → compact label (plain text, user-visible) ──
         print(label, flush=True)
 

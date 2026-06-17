@@ -34,7 +34,6 @@ from .base import PlatformInstaller
 _CLAUDE_DIR = Path.home() / ".claude"
 _HOOKS_DIR = _CLAUDE_DIR / "hooks"
 _SETTINGS = _CLAUDE_DIR / "settings.json"
-_MCP_JSON = _CLAUDE_DIR / ".mcp.json"
 
 # Hermes venv Python — has torch/transformers/yicenet installed
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
@@ -75,9 +74,6 @@ class ClaudeCodeInstaller(PlatformInstaller):
 
         # Patch settings.json
         self._patch_settings(python, hook_script)
-
-        # Remove MCP yicenet entry (it's superseded by hooks)
-        self._remove_mcp_entry()
 
     def unregister(self) -> None:
         hook_script = _HOOKS_DIR / "yicenet_claude_hook.py"
@@ -153,20 +149,6 @@ class ClaudeCodeInstaller(PlatformInstaller):
             json.dumps(settings, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-
-    def _remove_mcp_entry(self) -> None:
-        if not _MCP_JSON.exists():
-            return
-        try:
-            mcp = json.loads(_MCP_JSON.read_text(encoding="utf-8"))
-            if "yicenet" in mcp:
-                del mcp["yicenet"]
-                _MCP_JSON.write_text(
-                    json.dumps(mcp, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-        except Exception:
-            pass
 
     def _remove_hook_settings(self) -> None:
         if not _SETTINGS.exists():
