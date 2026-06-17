@@ -196,11 +196,13 @@ def scan_all_sources(state: dict, sources=None) -> list[dict]:
 
 
 def scan_new_messages(state: dict) -> list[dict]:
-    """Deprecated: use scan_all_sources() instead.
-
-    Delegates to scan_all_sources() with only the Hermes source for callers
-    that have not yet been updated.
-    """
+    """Deprecated: use scan_all_sources() instead. Removal target: v16.0.0."""
+    import warnings
+    warnings.warn(
+        "scan_new_messages() is deprecated, use scan_all_sources() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from yicenet.datasource.hermes import HermesDataSource
     h = HermesDataSource()
     if not h.is_available():
