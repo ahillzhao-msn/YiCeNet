@@ -191,6 +191,28 @@ class FileBackend:
         except Exception:
             return []
 
+    def cleanup_stale(self, max_age_hours: float = 48.0) -> int:
+        """Delete session files not modified in the last max_age_hours.
+
+        Called once at process startup to prevent unbounded file growth.
+        Hook sessions older than 48 h are definitively closed; no new
+        hook for that session_id will reload them.
+        """
+        import time
+        cutoff = time.time() - max_age_hours * 3600
+        deleted = 0
+        try:
+            for p in self._dir.glob("*.jsonl"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                        deleted += 1
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        return deleted
+
 
 # ── MemoryBank ────────────────────────────────────────────────────────────────
 
@@ -364,7 +386,12 @@ def configure_memory_bank_for(adapter) -> None:
     store_vectors = bool(
         cfg.get("memory", {}).get("store_vectors", False)
     )
-    backend = FileBackend(store_vectors=store_vectors) if need_backend else None
+    max_age_h = float(cfg.get("memory", {}).get("session_ttl_hours", 48.0))
+    if need_backend:
+        backend: Optional[PersistenceBackend] = FileBackend(store_vectors=store_vectors)
+        backend.cleanup_stale(max_age_hours=max_age_h)
+    else:
+        backend = None
     _default_bank = MemoryBank(backend=backend)
 
 

@@ -29,7 +29,12 @@ class HermesAdapter:
         return payload.get("session_id", "")
 
     def turn_id(self, payload: dict) -> int:
-        return int(payload.get("turn_id", 0))
+        tid = payload.get("turn_id")
+        if tid is not None:
+            return int(tid)
+        # Fallback: count from conversation_history length
+        history = payload.get("conversation_history") or payload.get("messages") or []
+        return max(0, len(history) - 1)
 
     def prompt(self, payload: dict) -> str:
         messages = payload.get("messages") or [{}]
@@ -127,7 +132,13 @@ def pre_llm_call(context: dict) -> dict | None:
         session_id = _adapter.session_id(context)
 
         engine = EngineProvider.get_engine()
-        result = engine.predict(prompt or "general task", temperature=0.1)
+        turn_id = _adapter.turn_id(context)
+        result = engine.predict(
+            prompt or "general task",
+            temperature=0.1,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
 
         display = ProviderRegistry.default().display
         chain = None
