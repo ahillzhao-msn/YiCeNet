@@ -213,16 +213,53 @@ def scan_new_messages(state: dict) -> list[dict]:
 def load_state() -> dict:
     """Load flywheel state."""
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+
+    # Scan checkpoints to find the highest existing version number
+    highest = _highest_checkpoint_version()
+
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
-            return json.load(f)
+            state = json.load(f)
+        # Reconcile: if state's counter is behind registry, fast-forward
+        if state.get("version_counter", 0) <= highest:
+            state["version_counter"] = highest + 1
+        return state
+
     return {
         "last_message_id": 0,
         "total_samples": 0,
-        "version_counter": 14,  # continue from v14 (v5 onwards)
+        "version_counter": highest + 1,  # next after existing checkpoints
         "last_run": None,
         "runs": [],
     }
+
+
+def _highest_checkpoint_version() -> int:
+    """Return the highest numeric version among existing checkpoints, or 0."""
+    try:
+        versions = []
+        for f in CHECKPOINT_DIR.glob("yicenet_v*.pt"):
+            stem = f.stem  # e.g. "yicenet_v18"
+            parts = stem.split("_v")
+            if len(parts) == 2:
+                try:
+                    versions.append(int(parts[1]))
+                except ValueError:
+                    pass
+        if versions:
+            return max(versions)
+    except Exception:
+        pass
+    # Also check registry as fallback
+    try:
+        if REGISTRY_PATH.exists():
+            reg = json.loads(REGISTRY_PATH.read_text())
+            ver = reg.get("active", {}).get("version", "")
+            if ver.startswith("v"):
+                return int(ver[1:])
+    except Exception:
+        pass
+    return 0
 
 
 def save_state(state: dict):
