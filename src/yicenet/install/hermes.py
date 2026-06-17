@@ -60,16 +60,8 @@ class HermesInstaller(PlatformInstaller):
         return None
 
     def _write_init_py(self) -> None:
+        stub = Path(__file__).parent.parent / "tools" / "_hermes_stub.py"
         (_PLUGIN_DIR / "__init__.py").write_text(
-            '"""YiCeNet Hermes plugin — lifecycle hooks."""\n'
-            "def pre_llm_call(context):\n"
-            "    from yicenet.tools.hermes_hook import pre_llm_call as _fn\n"
-            "    return _fn(context)\n\n"
-            "def post_tool_call(context):\n"
-            "    from yicenet.tools.hermes_hook import post_tool_call as _fn\n"
-            "    return _fn(context)\n\n"
-            "def post_llm_call(context):\n"
-            "    from yicenet.tools.hermes_hook import post_llm_call as _fn\n"
-            "    return _fn(context)\n",
+            stub.read_text(encoding="utf-8"),
             encoding="utf-8",
         )

@@ -33,15 +33,11 @@ class EngineProvider:
         at instantiation time). Defaults match config.yaml runtime defaults.
         """
         import os
-        rt: dict = {}
         try:
-            from .config import yicenet_home
-            import yaml  # type: ignore
-            cfg_path = yicenet_home() / "config.yaml"
-            if cfg_path.exists():
-                rt = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}).get("runtime", {})
+            from .config import load_user_config
+            rt = load_user_config().get("runtime", {})
         except Exception:
-            pass
+            rt = {}
         if rt.get("transformers_offline", True):
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         if rt.get("hf_hub_offline", True):

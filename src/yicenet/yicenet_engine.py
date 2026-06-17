@@ -52,17 +52,7 @@ def _ensure_vocab():
         build_vocab()
     _VOCAB_CHECKED = True
 
-# ── Hexagram names ──
-HEXAGRAM_NAMES = [
-    "乾", "坤", "屯", "蒙", "需", "讼", "师", "比",
-    "小畜", "履", "泰", "否", "同人", "大有", "谦", "豫",
-    "随", "蛊", "临", "观", "噬嗑", "贲", "剥", "复",
-    "无妄", "大畜", "颐", "大过", "坎", "离", "咸", "恒",
-    "遯", "大壮", "晋", "明夷", "家人", "睽", "蹇", "解",
-    "损", "益", "夬", "姤", "萃", "升", "困", "井",
-    "革", "鼎", "震", "艮", "渐", "归妹", "丰", "旅",
-    "巽", "兑", "涣", "节", "中孚", "小过", "既济", "未济",
-]
+from .display import HEXAGRAM_NAMES  # single source of truth — defined in display.py
 
 ACTION_NAMES = [
     "route_to_service", "parallel_invoke", "sequential_chain",
@@ -321,6 +311,7 @@ class YiCeNetEngine:
         # is provided.  Caller-supplied values take precedence (merge order:
         # chain_signals first, then caller's environment overrides).
         if session_id:
+            get_memory_bank().init_session(session_id)
             chain = self._compute_chain_signals(session_id)
             if chain:
                 environment = {**chain, **(environment or {})}

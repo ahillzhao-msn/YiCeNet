@@ -90,26 +90,8 @@ class ClaudeCodeInstaller(PlatformInstaller):
         return sys.executable  # fallback: current Python
 
     def _hook_script_content(self) -> str:
-        return (
-            '"""YiCeNet Claude Code hook runner.\n'
-            "Dispatched by UserPromptSubmit / PostToolUse / Stop hooks.\n"
-            'Reads event from YICENET_HOOK_EVENT env var or first argv.\n"""\n'
-            "import sys\n\n"
-            "# Reconfigure stdout to UTF-8 so CJK characters print on Windows.\n"
-            "if hasattr(sys.stdout, 'reconfigure'):\n"
-            "    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
-            "    except Exception: pass\n\n"
-            "event = os.environ.get('YICENET_HOOK_EVENT') or (sys.argv[1] if len(sys.argv) > 1 else 'pre')\n\n"
-            "if event == 'pre':\n"
-            "    from yicenet.tools.claude_hook import pre_message_send\n"
-            "    pre_message_send()\n"
-            "elif event == 'post_tool':\n"
-            "    from yicenet.tools.claude_hook import post_tool_use\n"
-            "    post_tool_use()\n"
-            "elif event == 'stop':\n"
-            "    from yicenet.tools.claude_hook import stop\n"
-            "    stop()\n"
-        )
+        runner = Path(__file__).parent.parent / "tools" / "_claude_runner.py"
+        return runner.read_text(encoding="utf-8")
 
     def _patch_settings(self, python: str, hook_script: Path) -> None:
         settings = {}
