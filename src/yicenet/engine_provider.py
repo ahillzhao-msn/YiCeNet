@@ -113,8 +113,8 @@ class EngineProvider:
         pt_files = sorted(checkpoint_dir.glob("yicenet_v*.pt"))
         if pt_files:
             return str(pt_files[-1])
-        # Final fallback
-        fallback = checkpoint_dir / "yicenet_v15.pt"
+        # Final fallback: minimal checkpoint distributed with releases
+        fallback = checkpoint_dir / "minimal.pt"
         if fallback.exists():
             return str(fallback)
         raise RuntimeError(

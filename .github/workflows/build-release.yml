@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g. v15.5.0) — used in release body only'
+        description: 'Version tag (e.g. v16.0.0) — used in release body only'
         required: false
         type: string
 
