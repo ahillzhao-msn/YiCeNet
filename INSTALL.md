@@ -200,8 +200,8 @@ This ensures portability across machines. Example:
 ```json
 {
   "active": {
-    "version": "v15",
-    "path": "yicenet_v15.pt"
+    "version": "v18",
+    "path": "yicenet_v18.pt"
   }
 }
 ```

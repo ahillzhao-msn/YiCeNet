@@ -229,7 +229,7 @@ def scan_all_sources(state: dict, sources=None) -> list[dict]:
 
 
 def scan_new_messages(state: dict) -> list[dict]:
-    """Deprecated: use scan_all_sources() instead. Removal target: v16.0.0."""
+    """Deprecated: use scan_all_sources() instead. Removal target: v17.0.0."""
     import warnings
     warnings.warn(
         "scan_new_messages() is deprecated, use scan_all_sources() instead.",
