@@ -1,16 +1,16 @@
 """
-YiCeNet Claude Code hook implementations.
+YiCeNet Claude Code hook adapter.
+
+ClaudeCodeAdapter implements only what is specific to Claude Code:
+  - session_id: derived from Claude Code's session UUID or cwd+date hash
+  - assistant_response: read from the Claude Code transcript JSONL file
+  - process_model: "subprocess" by default; pass "daemon" for IPC use in Mode 3
+
+All shared prediction and hook lifecycle logic lives in HooksAdapter.
 
 Entry points (called by _claude_runner.py):
-  pre_message_send()  — UserPromptSubmit
-  post_tool_use()     — PostToolUse
-  stop()              — Stop
-
-stdout → JSON injected into Claude's context.
-stderr → visible to the user in the terminal.
-
-ClaudeCodeAdapter is also imported by configure_memory_bank_for() in the
-runner so the MemoryBank singleton is set up before any engine code runs.
+  adapter.pre_message_send([payload])  — UserPromptSubmit
+  adapter.stop([payload])              — Stop
 """
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import sys
+
+from yicenet.tools.hooks_adapter import HooksAdapter
 
 # Reconfigure to UTF-8 so CJK characters print on Windows.
 for _s in (sys.stdout, sys.stderr):
@@ -29,13 +31,27 @@ for _s in (sys.stdout, sys.stderr):
             pass
 
 
-# ── Platform adapter ──────────────────────────────────────────────────────────
+class ClaudeCodeAdapter(HooksAdapter):
+    """Platform adapter for Claude Code hooks.
 
-class ClaudeCodeAdapter:
-    """Translates Claude Code hook payloads to domain primitives."""
+    process_model defaults to "subprocess" for the installed UserPromptSubmit /
+    Stop hooks.  Pass process_model="daemon" when constructing an instance
+    inside the MCP server's HTTP hook side-channel (Mode 3) to suppress
+    MemoryBank session flushing between IPC calls.
+    """
 
-    platform_id = "claude-code"
-    process_model = "subprocess"
+    _platform_id = "claude-code"
+
+    def __init__(self, process_model: str = "subprocess") -> None:
+        self._process_model = process_model
+
+    @property
+    def platform_id(self) -> str:
+        return self._platform_id
+
+    @property
+    def process_model(self) -> str:
+        return self._process_model
 
     def session_id(self, payload: dict) -> str:
         cc_id = payload.get("session_id", "")
@@ -45,31 +61,20 @@ class ClaudeCodeAdapter:
         date = datetime.datetime.now().strftime("%Y%m%d")
         return hashlib.sha256(f"{cwd}{date}".encode()).hexdigest()[:12]
 
-    def turn_id(self, payload: dict) -> int:
-        return max(0, len(payload.get("messages", [])) - 1)
-
-    def prompt(self, payload: dict) -> str:
-        return payload.get("prompt", "")
-
     def assistant_response(self, payload: dict) -> str:
+        """Read last assistant message from the Claude Code transcript file."""
         return _read_last_assistant(payload)
 
-    def platform_signals(self, payload: dict):
-        return None  # CC hooks have no pre-computed signals
 
-
-# ── Private transcript helper ─────────────────────────────────────────────────
+# ── Transcript helpers ────────────────────────────────────────────────────────
 
 def _read_last_assistant(payload: dict) -> str:
-    """Read the last assistant message from the Claude Code transcript."""
     from pathlib import Path
 
-    # Claude Code Stop hook provides transcript_path directly
     tp = payload.get("transcript_path", "")
     if tp and Path(tp).exists():
         return _last_asst_from_file(Path(tp))
 
-    # Fallback: locate transcript by session UUID
     cc_id = payload.get("session_id", "")
     if cc_id:
         projects = Path.home() / ".claude" / "projects"
@@ -107,107 +112,3 @@ def _last_asst_from_file(path) -> str:
     except OSError:
         pass
     return last
-
-
-# ── Module-level singleton ────────────────────────────────────────────────────
-
-_adapter = ClaudeCodeAdapter()
-_orchestrator = None  # lazy-init to avoid import at module load
-
-
-def _orch():
-    global _orchestrator
-    if _orchestrator is None:
-        from yicenet.hook_engine import HookOrchestrator
-        _orchestrator = HookOrchestrator(_adapter)
-    return _orchestrator
-
-
-# ── Hook entry points ─────────────────────────────────────────────────────────
-
-def _read_payload() -> dict:
-    try:
-        raw = sys.stdin.read().strip()
-        return json.loads(raw) if raw else {}
-    except Exception:
-        return {}
-
-
-def pre_message_send() -> None:
-    """UserPromptSubmit: extract prior-turn feedback, then prescribe hexagram."""
-    payload = _read_payload()
-    session_id = _adapter.session_id(payload)
-    prompt = _adapter.prompt(payload)
-    turn_id = _adapter.turn_id(payload)
-
-    # Submit feedback for the previous turn before doing this turn's prediction
-    try:
-        _orch().before_prediction(payload)
-    except Exception:
-        pass
-
-    try:
-        from yicenet.engine_provider import EngineProvider
-        from yicenet.providers import ProviderRegistry
-
-        engine = EngineProvider.get_engine()
-        env = {
-            "hour_of_day": datetime.datetime.now().hour,
-            "session_turn": turn_id,
-        }
-
-        result = engine.predict(
-            prompt or "general task",
-            temperature=0.1,
-            environment=env,
-            session_id=session_id,
-            turn_id=turn_id,
-            return_prescription=True,
-        )
-        prescription = result.get("context_prescription", {})
-
-        display = ProviderRegistry.default().display
-        chain = None
-        if session_id and display.needs_chain:
-            from yicenet.memory_bank import get_memory_bank
-            chain = get_memory_bank().get_hexagram_history(session_id)
-        label = display.render(result, chain=chain)
-
-        sys.stderr.write(label + "\n")
-        sys.stderr.flush()
-
-        print(json.dumps({
-            "yicenet": {
-                "session_id":    session_id,
-                "turn_id":       turn_id,
-                "label":         label,
-                "hexagram":      result.get("selected_hexagram_name", ""),
-                "action":        result.get("action_name", ""),
-                "env_confidence": result.get("env_confidence", 0.0),
-                "context_status": result.get("context_status", "thin"),
-                "prescription":  prescription,
-            }
-        }, ensure_ascii=False), flush=True)
-
-    except Exception:
-        sys.exit(0)
-
-
-def post_tool_use() -> None:
-    """PostToolUse: no-op for feedback (handled at turn boundaries).
-
-    Feedback signals require the next user message to be present.
-    before_prediction() in pre_message_send() handles this correctly.
-    We keep this hook registered so Claude Code fires it, but take no action.
-    """
-    pass
-
-
-def stop() -> None:
-    """Stop: record response metadata for next turn's feedback extraction."""
-    payload = _read_payload()
-    try:
-        _orch().on_turn_complete(payload)
-    except Exception:
-        pass
-    # MemoryBank.flush_session() is called inside on_turn_complete() for subprocesses.
