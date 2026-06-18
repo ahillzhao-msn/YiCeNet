@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yicenet"
-version = "16.1.0"
-description = "YiCeNet (易策网络) — I-Ching inspired tiny neural network for conversational navigation"
+version = "17.0.0"
+description = "YiCeNet - I-Ching inspired tiny neural network for conversational navigation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -60,3 +60,4 @@ dev-mode-dirs = ["src"]
 
 [dependency-groups]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
