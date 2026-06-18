@@ -70,6 +70,43 @@ pip install -e .
 yicenet-bootstrap --auto           # Same initialization
 ```
 
+## Upgrading
+
+> **Stop the MCP server before upgrading.**
+>
+> When YiCeNet runs as an MCP server (`yicenet-serve`), the host application
+> (Claude Code, any MCP-compatible IDE or client) holds an open file lock on
+> the `yicenet-serve` executable for the entire session. `pip install
+> --force-reinstall` will fail with a file-in-use error if the process is
+> still running, and may leave the package partially uninstalled.
+
+**Steps:**
+
+1. Stop the MCP server by closing the host application, or terminate the
+   process directly:
+
+   ```powershell
+   # Windows
+   taskkill /f /im yicenet-serve.exe
+   ```
+
+   ```bash
+   # Linux / macOS
+   pkill -f yicenet-serve
+   ```
+
+2. Install the new wheel:
+
+   ```bash
+   pip install YiCeNet-X.Y.Z-py3-none-any.whl --force-reinstall
+   ```
+
+3. Restart the host application. The MCP server will pick up the new version
+   automatically on next launch.
+
+**If the install already failed** (partial uninstall, `No module named 'yicenet'`):
+stop `yicenet-serve` as above, then re-run step 2.
+
 ## Uninstall
 
 ```bash
@@ -77,7 +114,7 @@ yicenet-bootstrap --auto           # Same initialization
 yicenet-uninstall                  # Removes Hermes plugin + Claude Code MCP entry
 yicenet-uninstall --clean-data     # + deletes ~/.yicenet/ entirely
 
-# 2. Remove the package
+# 2. Close all Claude Code sessions first (see Upgrading above), then:
 pip uninstall yicenet -y
 ```
 

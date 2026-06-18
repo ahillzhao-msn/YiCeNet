@@ -412,18 +412,17 @@ def configure_memory_bank_for(adapter) -> None:
         return
 
     try:
-        from yicenet.config import load_user_config
-        cfg = load_user_config()
+        from yicenet.config import get_platform_config
+        cfg = get_platform_config(getattr(adapter, "platform_id", ""))
     except Exception:
         cfg = {}
 
+    mem = cfg.get("memory", {})
     need_backend = adapter.process_model == "subprocess" or bool(
-        cfg.get("memory", {}).get("persist_daemon_sessions", False)
+        mem.get("persist_daemon_sessions", False)
     )
-    store_vectors = bool(
-        cfg.get("memory", {}).get("store_vectors", False)
-    )
-    max_age_h = float(cfg.get("memory", {}).get("session_ttl_hours", 48.0))
+    store_vectors = bool(mem.get("store_vectors", False))
+    max_age_h = float(mem.get("session_ttl_hours", 48.0))
     if need_backend:
         backend: Optional[PersistenceBackend] = FileBackend(store_vectors=store_vectors)
         backend.cleanup_stale(max_age_hours=max_age_h)

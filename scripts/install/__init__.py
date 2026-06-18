@@ -16,9 +16,17 @@ Three-channel flywheel data flow:
 
 from __future__ import annotations
 
+# ── Runtime env vars: set before any heavy imports ──
+# LOOM's pre_llm_call imports sentence_transformers → transformers.
+# Setting env vars at module level ensures they're in place before any
+# hook fires, regardless of plugin invocation order.
+import os
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TQDM_DISABLE", "1")
+
 import json
 import logging
-import os
 import sys
 import time
 from pathlib import Path

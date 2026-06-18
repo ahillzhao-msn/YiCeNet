@@ -1,25 +1,31 @@
 """
 YiCeNet MCP Server — context window management for Claude Code and MCP-compatible IDEs.
 
-Exposes YiCeNetEngine as MCP tools so Claude can actively manage its own context:
-  - yicenet_attend:   3ms lightweight context prescription (no hexagram overhead)
-  - yicenet_predict:  full hexagram reasoning + context prescription
-  - yicenet_feedback: submit reward signal to flywheel for continuous learning
-  - yicenet_switch:   hot-swap model checkpoint (A/B testing)
+Three operating modes:
+  Mode 2 (pure MCP):   Claude explicitly calls yicenet_predict / yicenet_attend.
+                       HookOrchestrator feedback loop runs via yicenet_turn_complete.
+  Mode 3 (hybrid):     Same MCP tools available PLUS an HTTP side-channel so the
+                       UserPromptSubmit / Stop hooks can reach the warm engine
+                       without cold-starting a subprocess.
+
+MCP tools:
+  yicenet_attend        — 3ms lightweight context prescription
+  yicenet_predict       — full hexagram routing + prescription
+  yicenet_turn_complete — record response for next-turn feedback (replaces Stop hook)
+  yicenet_feedback      — explicit reward signal to flywheel
+  yicenet_switch        — hot-swap model checkpoint
 
 Transport: stdio (Claude Code spawns this process; no port to manage).
 
 Claude Code setup (~/.claude/settings.json):
   {
     "mcpServers": {
-      "yicenet": {
-        "command": "yicenet-serve",
-        "env": {"YICENET_HOME": "/path/to/YiCeNet"}
-      }
+      "yicenet": { "command": "yicenet-serve" }
     }
   }
 
-Or run install-claudecode-hooks.sh to configure automatically.
+Hybrid mode additionally registers UserPromptSubmit / Stop hooks with
+YICENET_MODE=hybrid — use ClaudeCodeInstaller.register_hybrid() to configure.
 """
 
 import json
@@ -31,6 +37,21 @@ from yicenet.engine_provider import EngineProvider
 
 mcp = FastMCP("yicenet")
 
+# ── Module-level orchestrator (MCP / daemon path) ─────────────────────────────
+
+_mcp_orchestrator = None
+
+
+def _mcp_orch():
+    global _mcp_orchestrator
+    if _mcp_orchestrator is None:
+        from yicenet.tools.mcp_adapter import MCPAdapter
+        from yicenet.hook_engine import HookOrchestrator
+        _mcp_orchestrator = HookOrchestrator(MCPAdapter())
+    return _mcp_orchestrator
+
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 async def yicenet_attend(
@@ -126,6 +147,17 @@ async def yicenet_predict(
     import anyio
 
     def _run():
+        payload = {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "task_brief": task_brief,
+        }
+        if session_id:
+            try:
+                _mcp_orch().before_prediction(payload)
+            except Exception:
+                pass
+
         engine = EngineProvider.get_engine()
         return engine.predict(
             task_brief,
@@ -142,13 +174,47 @@ async def yicenet_predict(
 
 
 @mcp.tool()
+async def yicenet_turn_complete(
+    session_id: str,
+    response_snippet: str = "",
+) -> dict:
+    """
+    Record that the assistant's turn is complete (equivalent to the Stop hook).
+
+    Call this after each of your responses so YiCeNet can extract feedback
+    signals for the next-turn prediction.  response_snippet is the first ~300
+    characters of your reply — used for implicit feedback extraction.
+
+    In hybrid mode this is called automatically by the Stop hook via IPC;
+    in pure MCP mode you should call it yourself after each turn.
+    """
+    import anyio
+
+    def _run():
+        payload = {
+            "session_id": session_id,
+            "response_snippet": response_snippet,
+        }
+        try:
+            _mcp_orch().on_turn_complete(payload)
+        except Exception:
+            pass
+        return {"ok": True, "session_id": session_id}
+
+    return await anyio.to_thread.run_sync(_run)
+
+
+@mcp.tool()
 async def yicenet_feedback(
     session_id: str,
     event: str,
     token_cost: int = 0,
 ) -> dict:
     """
-    Submit a reward signal to the YiCeNet flywheel for continuous learning.
+    Submit an explicit reward signal to the YiCeNet flywheel for continuous learning.
+
+    Use this alongside yicenet_turn_complete for richer feedback.  The flywheel
+    accumulates these signals and uses them to incrementally fine-tune YiCeNet.
 
     event must be one of:
       - continued:  user sent a follow-up (positive signal, weight +0.3)
@@ -157,8 +223,6 @@ async def yicenet_feedback(
       - praised:    user explicitly praised the response (strong positive, +1.0)
       - abandoned:  user left without follow-up (negative, weight -0.5)
 
-    Call this after each meaningful turn outcome. The flywheel accumulates these
-    signals and uses them to incrementally fine-tune YiCeNet every 6 hours.
     token_cost: total tokens used in this turn (input + output).
     """
     valid_events = {"continued", "corrected", "completed", "praised", "abandoned"}
@@ -170,7 +234,7 @@ async def yicenet_feedback(
 
     def _run():
         submit_trajectory({
-            "producer": "claude-code",
+            "producer": "claude-code-mcp",
             "version": 1,
             "conversation_id": session_id,
             "trajectory": {
@@ -219,11 +283,28 @@ def registry_active() -> str:
 
 
 def main() -> None:
-    # Pre-warm heavy imports in the main thread BEFORE starting the asyncio event
-    # loop.  FastMCP's stdio transport puts stdout/stdin into IOCP async mode on
-    # Windows; any `import` executed inside a to_thread.run_sync worker thread
-    # after that point can deadlock trying to write progress output to the IOCP
-    # pipe.  Pre-importing here avoids the issue entirely.
+    import os
+    import threading
+
+    # 1. Start HTTP hook side-channel FIRST — before heavy imports — so the port
+    #    file is written immediately and hook subprocesses can find the daemon.
+    #    The hook server lazy-loads the engine on its first IPC request.
+    if os.environ.get("YICENET_DISABLE_HOOK_SERVER", "").lower() not in ("1", "true"):
+        try:
+            from yicenet.daemon.hook_server import start_hook_server
+            start_hook_server()
+        except Exception:
+            pass
+
+    # 2. Configure MemoryBank for daemon mode.
+    from yicenet.tools.mcp_adapter import MCPAdapter
+    from yicenet.memory_bank import configure_memory_bank_for
+    configure_memory_bank_for(MCPAdapter())
+
+    # 3. Pre-warm heavy imports in the main thread BEFORE starting the asyncio
+    #    event loop.  FastMCP's stdio transport puts stdout/stdin into IOCP async
+    #    mode on Windows; imports executed inside to_thread.run_sync workers after
+    #    that point can deadlock writing progress output to the IOCP pipe.
     try:
         from transformers import AutoTokenizer as _  # noqa: F401
         from yicenet.yicenet_engine import YiCeNetEngine as _  # noqa: F401

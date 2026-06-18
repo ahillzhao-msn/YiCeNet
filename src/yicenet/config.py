@@ -134,9 +134,70 @@ soul:
   priority_weights: [0.3, 0.2, 0.2, 0.3]  # 心/骨/皮/用 prior contribution
   inject_targets: ["hermes", "claude-code"]
   injection_level: "summary"  # "none" | "summary" | "full"
+
+# ── Per-platform overrides ────────────────────────────────────────────────────
+# Settings under platforms.<id> are deep-merged on top of the globals above.
+# Use platform_id values: "hermes", "claude-code", "claude-code-mcp".
+# Any key not listed here inherits the global value.
+platforms:
+  hermes:
+    display:
+      hexagram_chain: true   # 长会话显示卦链演进
+      mode: compact
+    memory:
+      persist_daemon_sessions: true
+      store_vectors: false
+      session_ttl_hours: 48.0
+
+  claude-code:
+    display:
+      hexagram_chain: false  # 短上下文窗口，不显卦链
+      mode: compact
+    daemon:
+      port: 7788             # HTTP side-channel port for hybrid mode IPC
+    memory:
+      persist_daemon_sessions: false
 """
 
 _USER_CONFIG_CACHE: Optional[dict] = None
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base; override wins on conflicts."""
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def get_platform_config(platform_id: str) -> dict:
+    """Return config merged for a specific platform.
+
+    Merges global settings with the platforms.<platform_id> override section.
+    Unknown platform_id → returns global config unchanged (safe default).
+
+    Example config.yaml layout::
+
+        display:
+          mode: compact          # global default
+
+        platforms:
+          hermes:
+            display:
+              hexagram_chain: true   # overrides global for hermes only
+          claude-code:
+            daemon:
+              port: 7788
+    """
+    user = load_user_config()
+    global_cfg = {k: v for k, v in user.items() if k != "platforms"}
+    platform_overrides = user.get("platforms", {}).get(platform_id, {})
+    if not platform_overrides:
+        return global_cfg
+    return _deep_merge(global_cfg, platform_overrides)
 
 
 def load_user_config(force_reload: bool = False) -> dict:
