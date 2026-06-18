@@ -1,9 +1,9 @@
-"""
-YiCeNet (易策网络) — I Ching inspired lightweight orchestration engine for Hermes.
+﻿"""
+YiCeNet (æ˜“ç­–ç½‘ç»œ) â€” I Ching inspired lightweight orchestration engine for Hermes.
 ~5.6M parameters (5,671,859), ~22 MB FP32, <3 ms inference.
 """
 
-__version__ = "16.1.0"
+__version__ = "17.0.0"
 
 # Public API
 from .yicenet_engine import YiCeNetEngine, get_engine, predict
@@ -35,3 +35,4 @@ __all__ = [
     "PredictionResult", "EnvAnalysis",
     "download_tokenizer", "tokenizer_available",
 ]
+
