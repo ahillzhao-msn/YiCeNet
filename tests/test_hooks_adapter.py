@@ -704,15 +704,15 @@ class TestIpcHook:
     def test_pre_message_send_ipc_success_path(self):
         """ipc_hook sends request and parses response from daemon."""
         from yicenet.tools.ipc_hook import pre_message_send_ipc
-        from unittest.mock import patch, MagicMock
-        from io import StringIO
+        from unittest.mock import patch
+        from io import BytesIO
 
         fake_result = {"yicenet": {"label": "坤", "hexagram": "坤", "session_id": "x"}}
-        fake_stdout = StringIO()
+        fake_stdout = BytesIO()
 
         with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
              patch("sys.stderr", StringIO()), \
-             patch("sys.stdout", fake_stdout):
+             patch("os.write", lambda fd, b: fake_stdout.write(b) if fd == 1 else None):
             ok = pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
 
         assert ok is True
@@ -730,7 +730,7 @@ class TestIpcHook:
 
         with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
              patch("sys.stderr", fake_stderr), \
-             patch("sys.stdout", StringIO()):
+             patch("os.write", lambda fd, b: None):
             pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
 
         assert "HEXLABEL" in fake_stderr.getvalue()
