@@ -13,14 +13,22 @@ Edit here; re-run install to deploy.
 import sys
 import os
 import json
+import io
 
-# Reconfigure stdout/stderr to UTF-8 so CJK characters print on Windows.
-for _s in (sys.stdout, sys.stderr):
-    if hasattr(_s, "reconfigure"):
-        try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+# Only reconfigure stderr for CJK label display; leave stdout untouched
+# so the pipe to Claude Code stays intact on Windows.
+# (reconfigure on stdout breaks pipe capture on Windows — use os.write instead)
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# Capture stdout from ipc_hook / adapter into a StringIO, then flush
+# via os.write(1, bytes) to bypass TextIOWrapper encoding issues.
+_real_stdout = sys.stdout
+_capture = io.StringIO()
+sys.stdout = _capture
 
 event = os.environ.get("YICENET_HOOK_EVENT") or (sys.argv[1] if len(sys.argv) > 1 else "pre")
 mode = os.environ.get("YICENET_MODE", "daemon")
@@ -37,6 +45,14 @@ try:
 except Exception:
     pass
 
+
+def _flush_stdout() -> None:
+    """Write captured stdout to fd 1 as raw UTF-8 bytes."""
+    _out = _capture.getvalue()
+    if _out:
+        os.write(1, _out.encode("utf-8"))
+
+
 # ── Daemon mode (default): IPC to independent daemon, auto-spawn ────────────
 
 if mode == "daemon":
@@ -44,7 +60,6 @@ if mode == "daemon":
 
     if event == "pre":
         if not pre_message_send_ipc(_payload):
-            # Daemon spawn failed — emit degraded status
             _degraded = {
                 "yicenet": {
                     "session_id": "",
@@ -65,6 +80,7 @@ if mode == "daemon":
     elif event == "stop":
         stop_ipc(_payload)
 
+    _flush_stdout()
     sys.exit(0)
 
 # ── Subprocess mode: cold-start engine in-process ───────────────────────────
@@ -94,3 +110,5 @@ elif event == "stop":
     tid = _adapter.turn_id(_payload)
     _adapter._ctx = SubprocessContextCollector(sid, tid)
     _adapter.stop(_payload)
+
+_flush_stdout()

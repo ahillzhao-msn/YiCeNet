@@ -73,7 +73,9 @@ def pre_message_send_ipc(payload: dict) -> bool:
     if label:
         sys.stderr.write(label + "\n")
         sys.stderr.flush()
-    print(json.dumps(result, ensure_ascii=False), flush=True)
+    # Write directly to fd 1 as raw UTF-8 — avoids TextIOWrapper encoding
+    # issues and ensures data reaches Claude Code's pipe on Windows.
+    os.write(1, json.dumps(result, ensure_ascii=False).encode("utf-8"))
     return True
 
 
