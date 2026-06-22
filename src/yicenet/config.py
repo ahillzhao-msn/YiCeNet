@@ -154,7 +154,7 @@ platforms:
       hexagram_chain: false  # 短上下文窗口，不显卦链
       mode: compact
     daemon:
-      port: 7788             # HTTP side-channel port for hybrid mode IPC
+      port: 7788             # Daemon HTTP server port
     memory:
       persist_daemon_sessions: false
 """

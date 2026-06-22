@@ -1,21 +1,18 @@
 """
-YiCeNet MCP Server — context window management for Claude Code and MCP-compatible IDEs.
+YiCeNet MCP Server — pure MCP tool interface for Claude Code.
 
-Three operating modes:
-  Mode 2 (pure MCP):   Claude explicitly calls yicenet_predict / yicenet_attend.
-                       HookOrchestrator feedback loop runs via yicenet_turn_complete.
-  Mode 3 (hybrid):     Same MCP tools available PLUS an HTTP side-channel so the
-                       UserPromptSubmit / Stop hooks can reach the warm engine
-                       without cold-starting a subprocess.
+Provides direct tool access to YiCeNet inference and feedback.
+Does NOT own or manage the daemon process — hooks and daemon are
+independent subsystems.
 
 MCP tools:
   yicenet_attend        — 3ms lightweight context prescription
   yicenet_predict       — full hexagram routing + prescription
-  yicenet_turn_complete — record response for next-turn feedback (replaces Stop hook)
+  yicenet_turn_complete — record response for next-turn feedback
   yicenet_feedback      — explicit reward signal to flywheel
   yicenet_switch        — hot-swap model checkpoint
 
-Transport: stdio (Claude Code spawns this process; no port to manage).
+Transport: stdio (Claude Code spawns this process).
 
 Claude Code setup (~/.claude/settings.json):
   {
@@ -23,9 +20,6 @@ Claude Code setup (~/.claude/settings.json):
       "yicenet": { "command": "yicenet-serve" }
     }
   }
-
-Hybrid mode additionally registers UserPromptSubmit / Stop hooks with
-YICENET_MODE=hybrid — use ClaudeCodeInstaller.register_hybrid() to configure.
 """
 
 import json
@@ -185,8 +179,8 @@ async def yicenet_turn_complete(
     signals for the next-turn prediction.  response_snippet is the first ~300
     characters of your reply — used for implicit feedback extraction.
 
-    In hybrid mode this is called automatically by the Stop hook via IPC;
-    in pure MCP mode you should call it yourself after each turn.
+    When hooks are active, the Stop hook calls the daemon directly via IPC;
+    in pure MCP mode you should call this yourself after each turn.
     """
     import anyio
 
@@ -283,28 +277,14 @@ def registry_active() -> str:
 
 
 def main() -> None:
-    import os
     import threading
 
-    # 1. Start HTTP hook side-channel FIRST — before heavy imports — so the port
-    #    file is written immediately and hook subprocesses can find the daemon.
-    #    The hook server lazy-loads the engine on its first IPC request.
-    if os.environ.get("YICENET_DISABLE_HOOK_SERVER", "").lower() not in ("1", "true"):
-        try:
-            from yicenet.daemon.hook_server import start_hook_server
-            start_hook_server()
-        except Exception:
-            pass
-
-    # 2. Configure MemoryBank for daemon mode.
     from yicenet.tools.mcp_adapter import MCPAdapter
     from yicenet.memory_bank import configure_memory_bank_for
     configure_memory_bank_for(MCPAdapter())
 
-    # 3. Pre-warm heavy imports in a BACKGROUND thread so mcp.run() can start
-    #    immediately and respond to the MCP initialize handshake without delay.
-    #    Stdout/stderr are suppressed inside the thread to avoid deadlocking on
-    #    the IOCP pipe that FastMCP's stdio transport sets up on Windows.
+    # Pre-warm heavy imports in a background thread so mcp.run() can start
+    # immediately and respond to the MCP initialize handshake without delay.
     def _prewarm():
         import contextlib
         import io

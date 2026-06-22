@@ -608,71 +608,73 @@ class TestHookServer:
         """Ensure hook_server module state is clean between tests."""
         import yicenet.daemon.hook_server as hs
         yield
-        hs.stop_hook_server()
         hs._adapter = None
 
-    def test_start_hook_server_returns_port(self):
-        from yicenet.daemon.hook_server import start_hook_server
-        port = start_hook_server(port=0)
-        assert port > 0
-
-    def test_start_hook_server_idempotent(self):
-        from yicenet.daemon.hook_server import start_hook_server
-        port1 = start_hook_server(port=0)
-        port2 = start_hook_server(port=0)
-        assert port1 == port2
-
     def test_post_hook_pre_calls_predict(self):
-        from yicenet.daemon.hook_server import start_hook_server
-        port = start_hook_server(port=0)
-        time.sleep(0.05)
+        """Test _handle_pre calls predict_for_turn_payload on the adapter.
 
+        Creates a minimal _HookHandler instance and calls _handle_pre directly.
+        """
+        import yicenet.daemon.hook_server as hs
+        from unittest.mock import MagicMock
+
+        # Minimal handler instance with required attributes
+        mock_send = MagicMock()
+        handler = hs._HookHandler
+        instance = handler.__new__(handler)
+        instance._send = mock_send
+        instance.path = "/hook/pre"
+        instance.headers = {}
+
+        mock_adapter = MagicMock()
         fake_result = {"yicenet": {"hexagram": "乾", "label": "x", "session_id": "abc"}}
-        with patch("yicenet.daemon.hook_server._hook_adapter") as mock_factory:
-            mock_adapter = mock_factory.return_value
-            mock_adapter.predict_for_turn_payload.return_value = fake_result
-            data = json.dumps({"prompt": "test", "session_id": "abc123456789"}).encode()
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/hook/pre", data=data,
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                body = json.loads(resp.read())
+        mock_adapter.predict_for_turn_payload.return_value = fake_result
 
-        assert body.get("yicenet", {}).get("hexagram") == "乾"
+        saved = hs._adapter
+        try:
+            hs._adapter = mock_adapter
+            instance._handle_pre({"prompt": "test", "session_id": "abc"})
+        finally:
+            hs._adapter = saved
+
+        mock_adapter.predict_for_turn_payload.assert_called_once()
+        # Should have returned the fake result
+        mock_send.assert_called_once_with(200, fake_result)
 
     def test_post_hook_stop_calls_stop(self):
-        from yicenet.daemon.hook_server import start_hook_server
-        port = start_hook_server(port=0)
-        time.sleep(0.05)
+        """Test _handle_stop calls stop on the adapter."""
+        import yicenet.daemon.hook_server as hs
+        from unittest.mock import MagicMock
 
-        with patch("yicenet.daemon.hook_server._hook_adapter") as mock_factory:
-            mock_adapter = mock_factory.return_value
-            data = json.dumps({"session_id": "abc123456789"}).encode()
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/hook/stop", data=data,
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                body = json.loads(resp.read())
+        handler = hs._HookHandler
+        instance = handler.__new__(handler)
+        instance._send = MagicMock()
+        instance.path = "/hook/stop"
+        instance.headers = {}
+        mock_adapter = MagicMock()
+
+        saved = hs._adapter
+        try:
+            hs._adapter = mock_adapter
+            instance._handle_stop({"session_id": "abc"})
+        finally:
+            hs._adapter = saved
 
         mock_adapter.stop.assert_called_once()
-        assert body.get("ok") is True
 
     def test_unknown_endpoint_returns_404(self):
-        import urllib.error
-        from yicenet.daemon.hook_server import start_hook_server
-        port = start_hook_server(port=0)
-        time.sleep(0.05)
+        import yicenet.daemon.hook_server as hs
+        from unittest.mock import MagicMock
 
-        data = b"{}"
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/hook/unknown", data=data,
-            headers={"Content-Type": "application/json"}, method="POST"
-        )
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(req, timeout=3)
-        assert exc_info.value.code == 404
+        handler = hs._HookHandler
+        instance = handler.__new__(handler)
+        instance._send = MagicMock()
+        instance.path = "/hook/unknown"
+        instance.headers = {}
+        instance.command = "POST"
+
+        instance.do_POST()
+        instance._send.assert_called_once_with(404, {"error": "not found"})
 
     def test_hook_adapter_singleton_uses_daemon_process_model(self):
         from yicenet.daemon.hook_server import _hook_adapter
@@ -688,7 +690,8 @@ class TestIpcHook:
 
     def test_returns_false_when_daemon_unreachable(self):
         from yicenet.tools.ipc_hook import pre_message_send_ipc
-        with patch("yicenet.tools.ipc_hook._get_port", return_value=1):  # port 1 = guaranteed fail
+        with patch("yicenet.tools.ipc_hook._get_port", return_value=1), \
+             patch("yicenet.tools.ipc_hook._ensure_daemon", return_value=0):
             result = pre_message_send_ipc({"prompt": "x"})
         assert result is False
 
@@ -699,25 +702,18 @@ class TestIpcHook:
         assert result is False
 
     def test_pre_message_send_ipc_success_path(self):
-        """Full round-trip: ipc_hook → hook_server → predict stub."""
-        import yicenet.daemon.hook_server as hs
-        from yicenet.daemon.hook_server import start_hook_server, _hook_adapter
+        """ipc_hook sends request and parses response from daemon."""
         from yicenet.tools.ipc_hook import pre_message_send_ipc
-
-        port = start_hook_server(port=0)
-        time.sleep(0.05)
+        from unittest.mock import patch, MagicMock
+        from io import StringIO
 
         fake_result = {"yicenet": {"label": "坤", "hexagram": "坤", "session_id": "x"}}
         fake_stdout = StringIO()
 
-        with patch.object(_hook_adapter(), "predict_for_turn_payload", return_value=fake_result), \
-             patch("yicenet.tools.ipc_hook._get_port", return_value=port), \
+        with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
              patch("sys.stderr", StringIO()), \
              patch("sys.stdout", fake_stdout):
             ok = pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
-
-        hs.stop_hook_server()
-        hs._adapter = None
 
         assert ok is True
         output = json.loads(fake_stdout.getvalue())
@@ -725,24 +721,17 @@ class TestIpcHook:
 
     def test_ipc_label_written_to_stderr(self):
         """Label from daemon response lands in the hook process stderr."""
-        import yicenet.daemon.hook_server as hs
-        from yicenet.daemon.hook_server import start_hook_server, _hook_adapter
         from yicenet.tools.ipc_hook import pre_message_send_ipc
-
-        port = start_hook_server(port=0)
-        time.sleep(0.05)
+        from unittest.mock import patch
+        from io import StringIO
 
         fake_result = {"yicenet": {"label": "HEXLABEL", "hexagram": "乾", "session_id": "x"}}
         fake_stderr = StringIO()
 
-        with patch.object(_hook_adapter(), "predict_for_turn_payload", return_value=fake_result), \
-             patch("yicenet.tools.ipc_hook._get_port", return_value=port), \
+        with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
              patch("sys.stderr", fake_stderr), \
              patch("sys.stdout", StringIO()):
             pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
-
-        hs.stop_hook_server()
-        hs._adapter = None
 
         assert "HEXLABEL" in fake_stderr.getvalue()
 
