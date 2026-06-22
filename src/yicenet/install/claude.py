@@ -1,19 +1,17 @@
-"""ClaudeCodeInstaller — all three YiCeNet integration modes for Claude Code.
+"""ClaudeCodeInstaller — YiCeNet integration modes for Claude Code.
 
-Mode 1  register_hooks()   — subprocess hook (cold-start; works without MCP)
-Mode 2  register_mcp()     — MCP server only (pure tool-call; no auto-injection)
-Mode 3  register_hybrid()  — MCP daemon + thin IPC hooks (auto-injection, warm engine)
+Modes:
+  daemon (default)  register_hooks()   — hooks with auto-spawning daemon IPC
+  mcp               register_mcp()     — MCP server for direct tool calls
+  full              register_full()    — both hooks + MCP (independent subsystems)
 
 Registered hooks (settings.json):
-  UserPromptSubmit → predict_for_turn_payload [extract prior feedback + prescribe]
-  PostToolUse      → sniff_tool via IPC/subprocess [accumulate tool signals for context_vector]
-  Stop             → on_turn_complete          [store response_snippet for next turn]
+  UserPromptSubmit → predict via daemon IPC [extract prior feedback + prescribe]
+  PostToolUse      → sniff_tool via daemon IPC [accumulate tool signals]
+  Stop             → on_turn_complete via daemon IPC [store response for next turn]
 
-In Mode 1, each hook invocation is a short-lived subprocess; FileBackend
-(JSONL WAL) bridges state between UserPromptSubmit and Stop.
-
-In Mode 3, the MCP server is the long-lived daemon; hook subprocesses are
-thin IPC clients that reach the daemon over HTTP and exit in <100ms.
+The daemon is an independent background process managed by daemon.launcher.
+It is NOT owned by the MCP server. MCP provides direct tool access only.
 """
 from __future__ import annotations
 
@@ -47,10 +45,10 @@ class ClaudeCodeInstaller(PlatformInstaller):
         )
         return r.returncode == 0
 
-    # ── Mode 1: subprocess hooks ──────────────────────────────────────────────
+    # ── Daemon mode (default): hooks with auto-spawning daemon ────────────────
 
     def register_hooks(self) -> None:
-        """Mode 1: register subprocess hook (cold-start per message)."""
+        """Register hooks that use daemon IPC (auto-spawns daemon on first call)."""
         python = self._python()
         if not python:
             raise RuntimeError("No suitable Python found for Claude Code hooks")
@@ -59,49 +57,43 @@ class ClaudeCodeInstaller(PlatformInstaller):
         hook_script = self._write_hook_script()
         self._patch_hook_settings(python, hook_script)
 
+    # ── MCP mode: pure tool interface ─────────────────────────────────────────
+
+    def register_mcp(self) -> None:
+        """Register MCP server for direct tool calls (no hooks, no daemon)."""
+        serve = self._yicenet_serve()
+        if not serve:
+            raise RuntimeError(
+                "yicenet-serve not found. Is yicenet installed in this venv?"
+            )
+        self._patch_mcp_settings(serve)
+
+    # ── Full mode: hooks + MCP (independent subsystems) ──────────────────────
+
+    def register_full(self) -> None:
+        """Register both hooks and MCP server as independent subsystems."""
+        self.register_hooks()
+        self.register_mcp()
+
+    # ── Uninstall ─────────────────────────────────────────────────────────────
+
     def unregister(self) -> None:
-        """Remove hooks and MCP server registration added by any register_*()."""
+        """Remove hooks and MCP server registration."""
         hook_script = _HOOKS_DIR / "yicenet_claude_hook.py"
         if hook_script.exists():
             hook_script.unlink()
         self._remove_hook_settings()
         self._remove_mcp_settings()
 
-    # ── Mode 2: pure MCP ─────────────────────────────────────────────────────
-
-    def register_mcp(self) -> None:
-        """Mode 2: register MCP server (explicit tool calls; no auto-injection)."""
-        serve = self._yicenet_serve()
-        if not serve:
-            raise RuntimeError(
-                "yicenet-serve not found. Is yicenet installed in this venv?"
-            )
-        self._patch_mcp_settings(serve)
-
     def unregister_mcp(self) -> None:
-        """Remove MCP server registration."""
+        """Remove MCP server registration only."""
         self._remove_mcp_settings()
 
-    # ── Mode 3: hybrid (MCP daemon + thin IPC hooks) ─────────────────────────
+    # ── Backward compatibility ───────────────────────────────────────────────
 
     def register_hybrid(self) -> None:
-        """Mode 3: register MCP daemon AND hooks; runner auto-detects IPC vs subprocess."""
-        serve = self._yicenet_serve()
-        if not serve:
-            raise RuntimeError(
-                "yicenet-serve not found. Is yicenet installed in this venv?"
-            )
-        python = self._python()
-        if not python:
-            raise RuntimeError("No suitable Python found for Claude Code hooks")
-
-        # 1. Register MCP server as daemon
-        self._patch_mcp_settings(serve)
-
-        # 2. Register hooks — no mode env var; runner auto-detects via port file
-        _HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-        hook_script = self._write_hook_script()
-        self._patch_hook_settings(python, hook_script)
+        """Deprecated alias for register_full()."""
+        self.register_full()
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -109,7 +101,6 @@ class ClaudeCodeInstaller(PlatformInstaller):
         return sys.executable
 
     def _yicenet_serve(self) -> str | None:
-        """Locate the yicenet-serve executable in this venv."""
         serve = shutil.which("yicenet-serve")
         if serve:
             return serve
@@ -151,7 +142,6 @@ class ClaudeCodeInstaller(PlatformInstaller):
         hooks = settings.setdefault("hooks", {})
 
         def _ensure_hook(event: str, event_val: str) -> None:
-            # Pass event as argv so it works even if Claude Code ignores env.
             cmd = f'"{python}" "{hook_script}" {event_val}'
             entries = hooks.setdefault(event, [])
             new_entry = {"hooks": [{"type": "command", "command": cmd}]}
@@ -159,7 +149,7 @@ class ClaudeCodeInstaller(PlatformInstaller):
                 for h in e.get("hooks", []):
                     if "yicenet_claude_hook" in h.get("command", ""):
                         h["command"] = cmd
-                        h.pop("env", None)  # strip legacy env
+                        h.pop("env", None)
                         self._save_settings(settings)
                         return
             entries.append(new_entry)

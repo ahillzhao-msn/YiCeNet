@@ -4,7 +4,7 @@ YiCeNet Claude Code hook adapter.
 ClaudeCodeAdapter implements only what is specific to Claude Code:
   - session_id: derived from Claude Code's session UUID or cwd+date hash
   - assistant_response: read from the Claude Code transcript JSONL file
-  - process_model: "subprocess" by default; pass "daemon" for IPC use in Mode 3
+  - process_model: "subprocess" for hook subprocess, "daemon" for daemon process
 
 All shared prediction and hook lifecycle logic lives in HooksAdapter.
 
@@ -34,10 +34,9 @@ for _s in (sys.stdout, sys.stderr):
 class ClaudeCodeAdapter(HooksAdapter):
     """Platform adapter for Claude Code hooks.
 
-    process_model defaults to "subprocess" for the installed UserPromptSubmit /
-    Stop hooks.  Pass process_model="daemon" when constructing an instance
-    inside the MCP server's HTTP hook side-channel (Mode 3) to suppress
-    MemoryBank session flushing between IPC calls.
+    process_model defaults to "subprocess" for the installed hook runner.
+    Pass process_model="daemon" when constructing an instance inside the
+    daemon process to suppress MemoryBank session flushing between calls.
     """
 
     _platform_id = "claude-code"

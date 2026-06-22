@@ -241,45 +241,63 @@ YiCeNet/
 
 ### Advanced: Hermes Agent Plugin Integration
 
-For a zero-effort setup where YiCeNet runs on **every turn without explicit tool calls**, install the optional Hermes plugin. It wires `yicenet_predict` and `feedback()` as native lifecycle hooks.
+For a zero-effort setup where YiCeNet runs on **every turn without explicit tool calls**, install the Hermes plugin or Claude Code hooks.
+
+**Hermes:**
 
 ```bash
-# From the YiCeNet repo
-python -m yicenet install --hermes
-python -m yicenet install --claude   # for Claude Code hooks
+pip install yicenet                           # install package
+hermes plugins enable yicenet-hooks           # activate plugin
 ```
 
-What it does:
+The plugin registers 4 lifecycle hooks: `pre_llm_call`, `post_tool_call`, `post_api_request`, `post_llm_call` — injecting hexagram context, accumulating tool/api signals, and writing 27-dim context vectors to MemoryBank for the RL flywheel.
 
-| Hook | When | What | Effect |
-|------|------|------|--------|
-| `pre_llm_call` | Before every response | `before_prediction()` → `engine.predict()` | Submits prior-turn feedback; injects hexagram context |
-| `post_tool_call` | After tool execution | Records tool turn in MemoryBank | Tracks tool usage in session |
-| `post_llm_call` | After every response | `on_turn_complete()` | Stores `response_snippet` for next turn's feedback extraction |
+**Claude Code:**
 
-**Feedback signal timing (1-turn delay):**
-
-```
-Turn N:  pre_llm_call  → engine.predict() → store TurnRecord (MemoryBank)
-         post_llm_call → store response_snippet (FileBackend)
-
-Turn N+1: pre_llm_call → load TurnRecord → extract_feedback(prompt_N+1, turn_N)
-                       → corrected / praised / abandoned / satisfaction
-                       → submit_trajectory() → flywheel_buffer.jsonl
+```bash
+python -m yicenet.install.claude              # install hooks + MCP
 ```
 
-All channels converge to `flywheel_buffer.jsonl`, consumed by the 6-hour flywheel cron for World Model + RL training.
+Three modes:
+| Mode | Setup | What it does |
+|------|-------|-------------|
+| `daemon` (default) | `register_hooks()` | Auto-spawning background daemon for IPC hooks. <100ms per turn. |
+| `mcp` | `register_mcp()` | MCP server tools only (`yicenet_predict`, `yicenet_attend`, `yicenet_feedback`). No auto-injection. |
+| `full` | `register_full()` | Both hooks + MCP. Daemon and MCP are independent processes. |
 
-**Requirements:** Hermes Agent, YiCeNet pip-installed (`pip install -e ~/YiCeNet`).
+In daemon mode, hooks (`UserPromptSubmit`, `PostToolUse`, `Stop`) communicate with the YiCeNet daemon over HTTP IPC. The daemon self-terminates after 30 minutes of inactivity and auto-re-spawns on the next hook call.
+
+**Hook lifecycle (all platforms):**
+
+| Hook | When | What |
+|------|------|------|
+| `pre_llm_call` | Before every response | Injects hexagram context; submits prior-turn feedback to flywheel |
+| `post_tool_call` | After each tool execution | Accumulates tool signals (name, exit code, duration) into ContextCollector |
+| `post_api_request` | After API call | Accumulates token usage (prompt + completion) into ContextCollector |
+| `post_llm_call` | After every response | Builds 27-dim context vector; flushes to MemoryBank |
+
+One signal is collected per trigger. At turn end, the 27-dim **context vector** is written to MemoryBank:
+| Signal group | Metrics | Source |
+|-------------|---------|--------|
+| User | input_len, is_first_turn | User message |
+| API | prompt_tokens, completion_tokens, duration | API response |
+| Tools | count, success_rate, retries, duration, diversity, output_size | PostToolUse hooks |
+| Response | length, has_code, code_block_count | Assistant reply |
+| Hexagram | confidence, q_gap, entropy | YiCeNet predict |
+| Timing | speed, speed_ratio, mood_trend, drift_trend | Cross-turn metrics |
+
+**Requirements:** Hermes Agent or Claude Code. YiCeNet installed via `pip install yicenet`.
 
 **To remove:**
 
 ```bash
+# Hermes
 hermes plugins disable yicenet-hooks
 rm -rf ~/.hermes/plugins/yicenet-hooks
-```
 
-This plugin works **independently** of LOOM. Install it alone for pure YiCeNet integration, or alongside `loom-hooks` for full LOOM + YiCeNet synergy.
+# Claude Code
+python -c "from yicenet.install.claude import ClaudeCodeInstaller; ClaudeCodeInstaller().unregister()"
+```
 
 ---
 
