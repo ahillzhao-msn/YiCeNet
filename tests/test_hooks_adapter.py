@@ -623,12 +623,14 @@ class TestHookServer:
         assert port1 == port2
 
     def test_post_hook_pre_calls_predict(self):
-        from yicenet.daemon.hook_server import start_hook_server, _hook_adapter
+        from yicenet.daemon.hook_server import start_hook_server
         port = start_hook_server(port=0)
         time.sleep(0.05)
 
         fake_result = {"yicenet": {"hexagram": "乾", "label": "x", "session_id": "abc"}}
-        with patch.object(_hook_adapter(), "predict_for_turn_payload", return_value=fake_result):
+        with patch("yicenet.daemon.hook_server._hook_adapter") as mock_factory:
+            mock_adapter = mock_factory.return_value
+            mock_adapter.predict_for_turn_payload.return_value = fake_result
             data = json.dumps({"prompt": "test", "session_id": "abc123456789"}).encode()
             req = urllib.request.Request(
                 f"http://127.0.0.1:{port}/hook/pre", data=data,
@@ -640,11 +642,12 @@ class TestHookServer:
         assert body.get("yicenet", {}).get("hexagram") == "乾"
 
     def test_post_hook_stop_calls_stop(self):
-        from yicenet.daemon.hook_server import start_hook_server, _hook_adapter
+        from yicenet.daemon.hook_server import start_hook_server
         port = start_hook_server(port=0)
         time.sleep(0.05)
 
-        with patch.object(_hook_adapter(), "stop") as mock_stop:
+        with patch("yicenet.daemon.hook_server._hook_adapter") as mock_factory:
+            mock_adapter = mock_factory.return_value
             data = json.dumps({"session_id": "abc123456789"}).encode()
             req = urllib.request.Request(
                 f"http://127.0.0.1:{port}/hook/stop", data=data,
@@ -653,7 +656,7 @@ class TestHookServer:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 body = json.loads(resp.read())
 
-        mock_stop.assert_called_once()
+        mock_adapter.stop.assert_called_once()
         assert body.get("ok") is True
 
     def test_unknown_endpoint_returns_404(self):
