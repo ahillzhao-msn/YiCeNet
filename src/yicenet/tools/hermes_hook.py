@@ -17,6 +17,7 @@ Called from ~/.hermes/plugins/yicenet-hooks/__init__.py:
 """
 from __future__ import annotations
 
+import json
 import sys
 from typing import Optional
 
@@ -125,13 +126,40 @@ def pre_llm_call(context: dict) -> "dict | None":
 
 
 def post_tool_call(context: dict) -> None:
-    """Record tool invocation turn in MemoryBank."""
+    """Record tool invocation in MemoryBank and context collector."""
     try:
         session_id = _adapter.session_id(context)
         turn_id = _adapter.turn_id(context)
         tool_name = context.get("tool_name", "")
         if not session_id:
             return
+
+        # Feed into context collector
+        ctx = _adapter.ctx
+        if ctx is not None:
+            result = context.get("result", "")
+            duration_ms = context.get("duration_ms", 0)
+            args = context.get("args", {}) or {}
+
+            # Determine success
+            if isinstance(result, dict):
+                success = "error" not in result
+            elif isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                    success = not (isinstance(parsed, dict) and "error" in parsed)
+                except (json.JSONDecodeError, TypeError):
+                    success = bool(result.strip())
+            else:
+                success = True
+
+            ctx.sniff_tool(
+                name=tool_name,
+                exit_code=0 if success else 1,
+                duration_ms=duration_ms or 0,
+                result_size_bytes=len(str(result)) if result else 0,
+            )
+
         from yicenet.engine_provider import EngineProvider
         engine = EngineProvider.get_engine()
         engine.predict(
@@ -148,3 +176,19 @@ def post_tool_call(context: dict) -> None:
 def post_llm_call(context: dict) -> None:
     """Record response metadata for next turn's real feedback extraction."""
     _adapter.stop(context)
+
+
+def post_api_request(context: dict) -> None:
+    """Accumulate token usage into context collector."""
+    try:
+        ctx = _adapter.ctx
+        if ctx is None:
+            return
+        usage = context.get("usage")
+        if not usage or not isinstance(usage, dict):
+            return
+        pt = int(usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0)
+        ct = int(usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0)
+        ctx.sniff_api(prompt_tokens=pt, completion_tokens=ct)
+    except Exception:
+        pass

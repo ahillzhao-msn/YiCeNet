@@ -6,11 +6,8 @@ Mode 3  register_hybrid()  — MCP daemon + thin IPC hooks (auto-injection, warm
 
 Registered hooks (settings.json):
   UserPromptSubmit → predict_for_turn_payload [extract prior feedback + prescribe]
+  PostToolUse      → sniff_tool via IPC/subprocess [accumulate tool signals for context_vector]
   Stop             → on_turn_complete          [store response_snippet for next turn]
-
-PostToolUse is intentionally NOT registered: feedback signals require the next
-user message to be present; before_prediction() handles this at UserPromptSubmit
-time (1-turn delay design).
 
 In Mode 1, each hook invocation is a short-lived subprocess; FileBackend
 (JSONL WAL) bridges state between UserPromptSubmit and Stop.
@@ -168,6 +165,7 @@ class ClaudeCodeInstaller(PlatformInstaller):
             entries.append(new_entry)
 
         _ensure_hook("UserPromptSubmit", "pre")
+        _ensure_hook("PostToolUse", "post_tool")
         _ensure_hook("Stop", "stop")
         self._save_settings(settings)
 

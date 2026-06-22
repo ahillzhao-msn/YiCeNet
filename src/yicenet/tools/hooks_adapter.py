@@ -34,6 +34,35 @@ class HooksAdapter(ABC):
     the shared predict / pre_message_send / stop lifecycle lives here.
     """
 
+    # ── Context Collector (每轮一个实例) ──────────────────────────────────────
+
+    def create_collector(self, payload: dict):
+        """Factory for platform-appropriate collector.
+
+        Default: DaemonContextCollector (works for Hermes, daemon-mode CC).
+        Override in subclasses for different process models.
+        """
+        from yicenet.hook_engine.collector.daemon import DaemonContextCollector
+        return DaemonContextCollector()
+
+    def new_turn(self, payload: dict) -> None:
+        """Start a new turn: creates a fresh ContextCollector.
+
+        Call at the very start of pre_llm_call / predict_for_turn_payload.
+        The collector accumulates signals from all hook callbacks during
+        the turn, then produces a normalized vector at build_vector().
+        """
+        self._ctx = self.create_collector(payload)
+        self._ctx.sniff_user(
+            self.prompt(payload),
+            is_first_turn=(self.turn_id(payload) == 0),
+        )
+
+    @property
+    def ctx(self):
+        """Current turn's context collector, if new_turn() was called."""
+        return getattr(self, "_ctx", None)
+
     # ── Abstract: subclasses must implement ───────────────────────────────────
 
     @property
@@ -78,7 +107,7 @@ class HooksAdapter(ABC):
 
     # ── Shared hook lifecycle ─────────────────────────────────────────────────
 
-    def predict_for_turn_payload(self, payload: dict) -> "dict | None":
+    def predict_for_turn_payload(self, payload: "dict | None") -> "dict | None":
         """Core prediction cycle — platform-agnostic.
 
         Runs before_prediction feedback, calls the YiCeNet engine, renders the
@@ -89,6 +118,7 @@ class HooksAdapter(ABC):
           pre_message_send() prints the result to stdout (subprocess injection).
           daemon hook_server.py returns the result over HTTP (IPC delivery).
         """
+        self.new_turn(payload)
         session_id = self.session_id(payload)
         turn_id = self.turn_id(payload)
         prompt = self.prompt(payload)
@@ -116,6 +146,31 @@ class HooksAdapter(ABC):
                 turn_id=turn_id,
                 return_prescription=True,
             )
+
+            # Feed hexagram Q-values into the context collector
+            candidates = result.get("candidates", [])
+            q_values = [c.get("q_value", 0.0) for c in candidates if "q_value" in c]
+            if q_values:
+                q_max = max(q_values)
+                q_top = sorted(q_values, reverse=True)
+                q_gap = (q_top[0] - q_top[1]) if len(q_top) > 1 else 0.0
+            else:
+                q_max = result.get("env_confidence", 0.0)
+                q_gap = 0.0
+
+            import math
+            candidates_list = result.get("candidates", [])
+            if candidates_list:
+                q_vals = [c.get("q_value", 0.0) for c in candidates_list]
+                total = sum(max(v, 1e-10) for v in q_vals)
+                probs = [max(v, 1e-10) / total for v in q_vals]
+                entropy = -sum(p * math.log(p) for p in probs)
+            else:
+                entropy = 0.0
+
+            if self.ctx:
+                self.ctx.sniff_hexagram(q_max, q_gap, entropy)
+
             prescription = result.get("context_prescription", {})
 
             platform_cfg = get_platform_config(self.platform_id)

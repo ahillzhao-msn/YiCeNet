@@ -22,3 +22,7 @@ def post_tool_call(context):
 def post_llm_call(context):
     from yicenet.tools.hermes_hook import post_llm_call as _fn
     return _fn(context)
+
+def post_api_request(context):
+    from yicenet.tools.hermes_hook import post_api_request as _fn
+    return _fn(context)
