@@ -1,34 +1,19 @@
-"""YiCeNet Claude Code hook runner.
-Dispatched by UserPromptSubmit / PostToolUse / Stop hooks.
-Reads event from YICENET_HOOK_EVENT env var or first argv.
-
-Modes:
-  - YICENET_MODE=daemon (default) → IPC to independent daemon; auto-spawns
-  - YICENET_MODE=subprocess → cold-start engine in-process (slow fallback)
-
-This file is the source of truth for what gets installed at
-~/.claude/hooks/yicenet_claude_hook.py by ClaudeCodeInstaller.
-Edit here; re-run install to deploy.
-"""
-import sys
-import os
+"""YiCeNet Claude Code hook runner."""
+import os, sys
+# Prime stdout pipe immediately — Claude Code on Windows requires early data.
+if len(sys.argv) > 1 and sys.argv[1] == "pre":
+    os.write(1, b"[YiCeNet] ")
 import json
-import io
 
-# Only reconfigure stderr for CJK label display; leave stdout untouched
-# so the pipe to Claude Code stays intact on Windows.
-# (reconfigure on stdout breaks pipe capture on Windows — use os.write instead)
+# CRITICAL (Windows): Do NOT call sys.stdout.reconfigure() — it breaks
+# Claude Code's pipe capture. Do NOT redirect sys.stdout to StringIO —
+# delayed pipe data causes Claude Code to discard the output.
+# Only reconfigure stderr for CJK label display.
 if hasattr(sys.stderr, "reconfigure"):
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-
-# Capture stdout from ipc_hook / adapter into a StringIO, then flush
-# via os.write(1, bytes) to bypass TextIOWrapper encoding issues.
-_real_stdout = sys.stdout
-_capture = io.StringIO()
-sys.stdout = _capture
 
 event = os.environ.get("YICENET_HOOK_EVENT") or (sys.argv[1] if len(sys.argv) > 1 else "pre")
 mode = os.environ.get("YICENET_MODE", "daemon")
@@ -44,14 +29,6 @@ try:
     _payload = json.loads(_raw) if _raw else {}
 except Exception:
     pass
-
-
-def _flush_stdout() -> None:
-    """Write captured stdout to fd 1 as raw UTF-8 bytes."""
-    _out = _capture.getvalue()
-    if _out:
-        os.write(1, _out.encode("utf-8"))
-
 
 # ── Daemon mode (default): IPC to independent daemon, auto-spawn ────────────
 
@@ -72,7 +49,8 @@ if mode == "daemon":
                     "prescription": {},
                 }
             }
-            print(json.dumps(_degraded, ensure_ascii=False), flush=True)
+            # Write directly to fd 1 as raw UTF-8 bytes
+            os.write(1, json.dumps(_degraded, ensure_ascii=False).encode("utf-8"))
             sys.stderr.write("[YiCeNet] daemon unavailable\n")
             sys.stderr.flush()
     elif event == "post_tool":
@@ -80,7 +58,6 @@ if mode == "daemon":
     elif event == "stop":
         stop_ipc(_payload)
 
-    _flush_stdout()
     sys.exit(0)
 
 # ── Subprocess mode: cold-start engine in-process ───────────────────────────
@@ -110,5 +87,3 @@ elif event == "stop":
     tid = _adapter.turn_id(_payload)
     _adapter._ctx = SubprocessContextCollector(sid, tid)
     _adapter.stop(_payload)
-
-_flush_stdout()
