@@ -45,6 +45,16 @@ class ClaudeCodeAdapter(HooksAdapter):
     def __init__(self, process_model: str = "subprocess") -> None:
         self._process_model = process_model
 
+    def create_collector(self, payload: dict):
+        if self._process_model == "daemon":
+            from yicenet.hook_engine.collector.daemon import DaemonContextCollector
+            return DaemonContextCollector()
+        from yicenet.hook_engine.collector.subprocess import SubprocessContextCollector
+        return SubprocessContextCollector(
+            session_id=self.session_id(payload),
+            turn_id=self.turn_id(payload),
+        )
+
     @property
     def platform_id(self) -> str:
         return self._platform_id

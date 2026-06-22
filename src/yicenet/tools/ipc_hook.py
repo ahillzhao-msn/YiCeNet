@@ -19,7 +19,7 @@ from pathlib import Path
 
 _PORT_FILE = Path(tempfile.gettempdir()) / "yicenet-daemon.port"
 _DEFAULT_PORT = 7788
-_TIMEOUT = 2.0  # seconds — well within Claude Code's hook budget
+_TIMEOUT = 10.0  # seconds — accommodate cold start (~1.3s observed)
 
 
 def _get_port() -> int:
@@ -64,6 +64,11 @@ def pre_message_send_ipc(payload: dict) -> bool:
         sys.stderr.flush()
     print(json.dumps(result, ensure_ascii=False), flush=True)
     return True
+
+
+def post_tool_ipc(payload: dict) -> bool:
+    """Send post-tool payload to daemon for context collector."""
+    return _post("/hook/post_tool", payload) is not None
 
 
 def stop_ipc(payload: dict) -> bool:

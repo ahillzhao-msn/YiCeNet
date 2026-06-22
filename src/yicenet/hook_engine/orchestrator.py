@@ -78,6 +78,17 @@ class HookOrchestrator:
             "response_snippet":    response[:300],
             "response_char_count": len(response),
         }
+
+        # Collect turn-level context vector (environment signals)
+        ctx = getattr(self._adapter, "ctx", None)
+        if ctx is not None:
+            ctx.sniff_response(response)
+            prev_turn = bank.get_turn(session_id, last.turn_id - 1) if last.turn_id > 0 else None
+            prev_meta = (prev_turn.metadata or {}).get("context_vector") if prev_turn else None
+            metadata["context_vector"] = ctx.build_vector(prev_metadata=prev_meta)
+            if hasattr(ctx, "cleanup"):
+                ctx.cleanup()
+
         raw_signals = self._adapter.platform_signals(payload)
         if raw_signals:
             metadata["platform_signals"] = raw_signals

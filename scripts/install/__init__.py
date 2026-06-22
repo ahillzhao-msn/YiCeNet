@@ -37,6 +37,9 @@ logger = logging.getLogger("yicenet-hooks")
 
 from yicenet.config import yicenet_data_dir
 
+# Pre-import the HermesAdapter singleton for context collector access
+from yicenet.tools.hermes_hook import _adapter as _hermes_adapter
+
 # Flywheel buffer path — platform-independent data root
 _YICENET_BUFFER = str(yicenet_data_dir() / "flywheel_buffer.jsonl")
 
@@ -266,12 +269,30 @@ def post_tool_call(**kw: Any) -> None:
         success=success,
     )
 
+    # Feed into context collector for turn-level signal vector
+    ctx = _hermes_adapter.ctx
+    if ctx is not None:
+        result_str = str(result) if result else ""
+        ctx.sniff_tool(
+            name=tool_name,
+            exit_code=0 if success else 1,
+            duration_ms=duration_ms,
+            result_size_bytes=len(result_str),
+        )
+
 
 def post_api_request(**kw: Any) -> None:
     """Accumulate token usage for accurate reward computation."""
     usage = kw.get("usage")
     if usage and isinstance(usage, dict):
         _record_api_usage(kw.get("session_id", ""), usage)
+
+    # Feed into context collector
+    ctx = _hermes_adapter.ctx
+    if ctx is not None and usage and isinstance(usage, dict):
+        pt = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
+        ct = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
+        ctx.sniff_api(prompt_tokens=int(pt), completion_tokens=int(ct))
 
 
 def post_llm_call(**kw: Any) -> None:

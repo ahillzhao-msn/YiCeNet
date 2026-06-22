@@ -5,8 +5,9 @@ The thin hook client (ipc_hook.py) connects to it instead of cold-starting
 the engine, keeping hook latency under 100ms.
 
 Endpoints:
-  POST /hook/pre   — run predict_for_turn_payload; return JSON for stdout injection
-  POST /hook/stop  — run on_turn_complete; return {"ok": true}
+  POST /hook/pre        — run predict_for_turn_payload; return JSON for stdout injection
+  POST /hook/post_tool  — feed tool execution data into context collector; return {"ok": true}
+  POST /hook/stop       — run on_turn_complete; return {"ok": true}
 
 Port selection: YICENET_DAEMON_PORT env var → config → DEFAULT_PORT (7788).
 Port is written to PORT_FILE so the hook client can discover it without env.
@@ -57,6 +58,8 @@ class _HookHandler(BaseHTTPRequestHandler):
 
         if self.path == "/hook/pre":
             self._handle_pre(payload)
+        elif self.path == "/hook/post_tool":
+            self._handle_post_tool(payload)
         elif self.path == "/hook/stop":
             self._handle_stop(payload)
         else:
@@ -66,6 +69,20 @@ class _HookHandler(BaseHTTPRequestHandler):
         try:
             result = _hook_adapter().predict_for_turn_payload(payload)
             self._send(200, result if result is not None else {})
+        except Exception as exc:
+            self._send(500, {"error": str(exc)})
+
+    def _handle_post_tool(self, payload: dict) -> None:
+        try:
+            adapter = _hook_adapter()
+            if adapter.ctx is not None:
+                adapter.ctx.sniff_tool(
+                    name=payload.get("tool_name", ""),
+                    exit_code=payload.get("exit_code", 0),
+                    duration_ms=payload.get("duration_ms", 0),
+                    result_size_bytes=payload.get("result_size", 0),
+                )
+            self._send(200, {"ok": True})
         except Exception as exc:
             self._send(500, {"error": str(exc)})
 

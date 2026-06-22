@@ -3,7 +3,7 @@ YiCeNet (æ˜“ç­–ç½‘ç»œ) â€” I Ching inspired lightweight orch
 ~5.6M parameters (5,671,859), ~22 MB FP32, <3 ms inference.
 """
 
-__version__ = "16.1.1"
+__version__ = "16.2.0"
 
 # Public API
 from .yicenet_engine import YiCeNetEngine, get_engine, predict
