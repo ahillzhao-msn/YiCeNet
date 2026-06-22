@@ -71,3 +71,4 @@ AGENTS.md
 .github/.sap-adt-version.json
 .github/agents/
 .github/skills/
+data/memory/

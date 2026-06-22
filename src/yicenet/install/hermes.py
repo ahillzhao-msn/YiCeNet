@@ -45,7 +45,7 @@ class HermesInstaller(PlatformInstaller):
         (plugin_dir / "plugin.yaml").write_text(
             "name: yicenet-hooks\n"
             "version: '1'\n"
-            "hooks: [pre_llm_call, post_tool_call, post_llm_call]\n",
+            "hooks: [pre_llm_call, post_tool_call, post_api_request, post_llm_call]\n",
             encoding="utf-8",
         )
         self._write_init_py(plugin_dir)
