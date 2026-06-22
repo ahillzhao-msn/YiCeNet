@@ -3,7 +3,7 @@ Dispatched by UserPromptSubmit / PostToolUse / Stop hooks.
 Reads event from YICENET_HOOK_EVENT env var or first argv.
 
 Mode priority:
-  - YICENET_MODE=daemon (default) → IPC path (Mode 3)
+  - YICENET_MODE=daemon (default) → IPC only; fast-fail if daemon offline
   - YICENET_MODE=subprocess → subprocess path (Mode 1)
   - YICENET_MODE=auto|hybrid → try IPC, fall back to subprocess
 
@@ -38,7 +38,7 @@ try:
 except Exception:
     pass
 
-# ── Daemon / auto / hybrid: try IPC first, fall back to subprocess ──────────
+# ── Daemon / auto / hybrid: try IPC first ────────────────────────────────────
 
 if mode != "subprocess":
     from yicenet.tools.ipc_hook import pre_message_send_ipc, stop_ipc, post_tool_ipc
@@ -46,15 +46,36 @@ if mode != "subprocess":
     if event == "pre":
         if pre_message_send_ipc(_payload):
             sys.exit(0)
-        # Daemon unreachable — fall through to subprocess path below.
     elif event == "post_tool":
         if post_tool_ipc(_payload):
             sys.exit(0)
-        # Daemon unreachable — fall through to subprocess path below.
     elif event == "stop":
         if stop_ipc(_payload):
             sys.exit(0)
-        # Daemon unreachable — fall through to subprocess path below.
+
+    # Daemon unreachable.  In "daemon" mode (default) the subprocess cold-start
+    # takes ~9s which exceeds Claude Code's hook timeout, so emit a degraded
+    # status and exit immediately instead of blocking.
+    if mode == "daemon":
+        if event == "pre":
+            _degraded = {
+                "yicenet": {
+                    "session_id": "",
+                    "turn_id": 0,
+                    "label": "[YiCeNet daemon offline — MCP server not connected]",
+                    "hexagram": "",
+                    "action": "",
+                    "env_confidence": 0.0,
+                    "context_status": "thin",
+                    "prescription": {},
+                }
+            }
+            print(json.dumps(_degraded, ensure_ascii=False), flush=True)
+            sys.stderr.write("[YiCeNet] daemon offline — restart session to reconnect MCP\n")
+            sys.stderr.flush()
+        sys.exit(0)
+
+    # auto/hybrid: fall through to subprocess path below.
 
 # ── Subprocess mode (Mode 1) ────────────────────────────────────────────────
 

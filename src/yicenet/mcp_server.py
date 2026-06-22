@@ -301,15 +301,22 @@ def main() -> None:
     from yicenet.memory_bank import configure_memory_bank_for
     configure_memory_bank_for(MCPAdapter())
 
-    # 3. Pre-warm heavy imports in the main thread BEFORE starting the asyncio
-    #    event loop.  FastMCP's stdio transport puts stdout/stdin into IOCP async
-    #    mode on Windows; imports executed inside to_thread.run_sync workers after
-    #    that point can deadlock writing progress output to the IOCP pipe.
-    try:
-        from transformers import AutoTokenizer as _  # noqa: F401
-        from yicenet.yicenet_engine import YiCeNetEngine as _  # noqa: F401
-    except Exception:
-        pass
+    # 3. Pre-warm heavy imports in a BACKGROUND thread so mcp.run() can start
+    #    immediately and respond to the MCP initialize handshake without delay.
+    #    Stdout/stderr are suppressed inside the thread to avoid deadlocking on
+    #    the IOCP pipe that FastMCP's stdio transport sets up on Windows.
+    def _prewarm():
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            try:
+                from transformers import AutoTokenizer as _  # noqa: F401
+                from yicenet.yicenet_engine import YiCeNetEngine as _  # noqa: F401
+            except Exception:
+                pass
+
+    threading.Thread(target=_prewarm, name="yicenet-prewarm", daemon=True).start()
 
     mcp.run()
 

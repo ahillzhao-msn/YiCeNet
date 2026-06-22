@@ -22,6 +22,16 @@ _DEFAULT_PORT = 7788
 _TIMEOUT = 10.0  # seconds — accommodate cold start (~1.3s observed)
 
 
+def _daemon_available() -> bool:
+    """Fast check: port file or explicit env var signals a daemon is expected."""
+    if os.environ.get("YICENET_DAEMON_PORT"):
+        return True
+    try:
+        return _PORT_FILE.exists()
+    except Exception:
+        return False
+
+
 def _get_port() -> int:
     try:
         if _PORT_FILE.exists():
@@ -55,6 +65,8 @@ def pre_message_send_ipc(payload: dict) -> bool:
     Writes the hexagram label to stderr (terminal-visible) and the full
     yicenet JSON to stdout (injected into Claude's context window).
     """
+    if not _daemon_available():
+        return False
     result = _post("/hook/pre", payload)
     if result is None:
         return False
@@ -68,6 +80,8 @@ def pre_message_send_ipc(payload: dict) -> bool:
 
 def post_tool_ipc(payload: dict) -> bool:
     """Send post-tool payload to daemon for context collector."""
+    if not _daemon_available():
+        return False
     return _post("/hook/post_tool", payload) is not None
 
 
@@ -76,5 +90,7 @@ def stop_ipc(payload: dict) -> bool:
 
     Returns True if daemon acknowledged, False if unreachable.
     """
+    if not _daemon_available():
+        return False
     result = _post("/hook/stop", payload)
     return result is not None
