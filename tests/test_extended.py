@@ -396,6 +396,128 @@ def test_compute_hexagram_reward():
 
 
 # ═══════════════════════════════════════════════════════════
+# World Model V3
+# ═══════════════════════════════════════════════════════════
+
+def test_world_model_v3_forward():
+    """WorldModelV3 forward pass should return correct shapes."""
+    from yicenet.world_model import WorldModelV3
+
+    wm = WorldModelV3()
+    B = 4
+    probes = torch.randn(B, 9)
+    ctx_vec = torch.randn(B, 27)
+    hex_id = torch.randint(0, 64, (B,))
+
+    hex_dist, ext_vec = wm(probes, ctx_vec, hex_id)
+
+    assert hex_dist.shape == (B, 64)
+    assert ext_vec.shape == (B, 3)
+    assert (hex_dist >= 0).all() and (hex_dist <= 1).all()
+    for b in range(B):
+        assert abs(hex_dist[b].sum().item() - 1.0) < 0.01
+    assert (ext_vec >= 0).all() and (ext_vec <= 1).all()
+
+
+def test_world_model_v3_save_load():
+    """WorldModelV3 save/load round-trip."""
+    from yicenet.world_model import WorldModelV3
+    import tempfile
+
+    wm = WorldModelV3()
+    probes = torch.randn(2, 9)
+    ctx_vec = torch.randn(2, 27)
+    hex_id = torch.tensor([10, 42])
+
+    with torch.no_grad():
+        orig_dist, orig_ext = wm(probes, ctx_vec, hex_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+        tmp = f.name
+    try:
+        wm.save(tmp)
+        wm2 = WorldModelV3.load(tmp)
+
+        with torch.no_grad():
+            loaded_dist, loaded_ext = wm2(probes, ctx_vec, hex_id)
+
+        assert torch.allclose(orig_dist, loaded_dist), "Hex distribution mismatch after load"
+        assert torch.allclose(orig_ext, loaded_ext), "External vector mismatch after load"
+
+        # Verify context_dim persisted in config
+        saved = torch.load(tmp, weights_only=False)
+        assert saved["config"]["context_dim"] == 27
+        assert saved["config"]["probe_dim"] == 9
+    finally:
+        os.unlink(tmp)
+
+
+def test_world_model_v3_endogenous_weight():
+    """WorldModelV3 compute_endogenous_weight should return valid weights."""
+    from yicenet.world_model import WorldModelV3
+
+    wm = WorldModelV3()
+    probes = torch.randn(4, 9)
+    ctx_vec = torch.randn(4, 27)
+    hex_id = torch.randint(0, 64, (4,))
+
+    with torch.no_grad():
+        pred_dist, _ = wm(probes, ctx_vec, hex_id)
+
+    weights = wm.compute_endogenous_weight(probes, ctx_vec, hex_id, pred_dist)
+    assert weights.shape == (4,)
+    assert (weights >= 0).all() and (weights <= 1).all()
+    assert weights.mean().item() > 0.5
+
+
+def test_world_model_v3_hex_mask():
+    """WorldModelV3 compute_weighted_loss with hex_mask should zero HeadA for masked samples."""
+    from yicenet.world_model import WorldModelV3
+
+    wm = WorldModelV3()
+    B = 4
+    probes = torch.randn(B, 9)
+    ctx_vec = torch.randn(B, 27)
+    hex_id = torch.randint(0, 64, (B,))
+
+    with torch.no_grad():
+        pred_dist, pred_ext = wm(probes, ctx_vec, hex_id)
+
+    target_dist = torch.softmax(torch.randn(B, 64), dim=-1)
+    target_ext = torch.rand(B, 3)
+    w_slow = torch.ones(B)
+    w_fast = torch.ones(B)
+
+    # All masked → HeadA loss should be 0
+    hex_mask = torch.zeros(B)
+    loss_a, loss_b, total = wm.compute_weighted_loss(
+        pred_dist, target_dist, pred_ext, target_ext, w_slow, w_fast, hex_mask
+    )
+    assert loss_a.item() == 0.0, f"Fully masked HeadA should be 0, got {loss_a.item()}"
+    assert loss_b.item() > 0.0, "HeadB should still train"
+
+
+def test_flywheel_entry_to_context_vector():
+    """flywheel_entry_to_context_vector should produce 27-dim tensor."""
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from rl_train import flywheel_entry_to_context_vector
+
+    entry = {
+        "user_text": "test input with ```code```",
+        "token_cost": 5000,
+        "satisfaction": 0.7,
+        "corrected": True,
+        "praised": False,
+        "abandoned": False,
+    }
+    vec = flywheel_entry_to_context_vector(entry)
+    assert vec.shape == (27,), f"Expected (27,), got {vec.shape}"
+    assert vec[12].item() == 1.0, "has_code should be 1.0 for text with ```"
+    assert vec[24].item() == 1.0, "is_correction should be 1.0"
+    assert vec[25].item() == 0.0, "is_praise should be 0.0"
+
+
+# ═══════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════
 
@@ -411,6 +533,11 @@ def run_all():
         test_power_law_weight,
         test_world_model_endogenous_weight,
         test_world_model_save_load,
+        test_world_model_v3_forward,
+        test_world_model_v3_save_load,
+        test_world_model_v3_endogenous_weight,
+        test_world_model_v3_hex_mask,
+        test_flywheel_entry_to_context_vector,
         test_probe_extraction,
         test_compute_satisfaction,
         test_estimate_token_cost,

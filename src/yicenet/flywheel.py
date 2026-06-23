@@ -345,8 +345,8 @@ def flywheel_run():
         return
 
     # ── Step 3: Incremental world model v2 update ──
-    print("\n  Step 3: Updating World Model v2 (power-law weighted)...")
-    _update_world_model_v2(buffer_path)
+    print("\n  Step 3: Updating World Model v3 (power-law weighted)...")
+    _update_world_model_v3(buffer_path)
 
     # ── Step 4: RL fine-tune v5 ──
     print("\n  Step 4: RL fine-tuning v5 (64-dim projection reward)...")
@@ -380,18 +380,57 @@ def flywheel_run():
     save_state(state)
 
 
-def _update_world_model_v2(buffer_path: Path):
+def _flywheel_entry_to_context_vector(entry: dict):
+    """Map a flywheel buffer entry to a 27-dim context vector for WMv3."""
+    import torch
+    user_text = entry.get("user_text", "")
+    token_cost = entry.get("token_cost", 0)
+    satisfaction = entry.get("satisfaction", 0.0)
+
+    vec = [
+        min(len(user_text) / 512.0, 1.0),
+        0.0,
+        token_cost / 4096.0,
+        token_cost * 0.3 / 4096.0,
+        0.5,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        token_cost * 0.01 / 4000.0,
+        float("```" in user_text),
+        0.0,
+        0.5,
+        0.0,
+        0.5,
+        0.3,
+        1.0,
+        satisfaction - 0.5,
+        0.0,
+        0.0,
+        0.0,
+        satisfaction,
+        float(entry.get("corrected", False)),
+        float(entry.get("praised", False)),
+        float(entry.get("abandoned", False)),
+    ]
+    return torch.tensor(vec, dtype=torch.float32)
+
+
+def _update_world_model_v3(buffer_path: Path):
     """
-    Incremental World Model v2 update with power-law weighting.
+    Incremental World Model v3 update with power-law weighting.
 
     Uses dual-head loss (headA=64-dim distribution, headB=ext vector)
-    weighted by power-law forgetting curve.
+    weighted by power-law forgetting curve. V3 adds 27-dim context_vector input.
     """
     import torch
     import random
     import torch.nn.functional as F
     from yicenet.config import YiCeNetConfig
-    from yicenet.world_model import WorldModelV2, power_law_weight
+    from yicenet.world_model import WorldModelV3, power_law_weight
     from yicenet.yicenet_engine import YiCeNetEngine
     from yicenet.tokenizer import encode
     from yicenet.rl_train import project_to_hexagram_space
@@ -399,23 +438,24 @@ def _update_world_model_v2(buffer_path: Path):
     device_str = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_str)
 
-    # Load existing World Model v2
     wm_path = CHECKPOINT_DIR / "world_model_best.pt"
     if wm_path.exists():
-        wm = WorldModelV2.load(str(wm_path), device_str)
-        print(f"    Loaded existing World Model v2 from {wm_path}")
+        try:
+            wm = WorldModelV3.load(str(wm_path), device_str)
+            print(f"    Loaded existing World Model v3 from {wm_path}")
+        except (KeyError, RuntimeError):
+            wm = WorldModelV3().to(device)
+            print("    Old WM format, starting fresh V3")
     else:
-        wm = WorldModelV2().to(device)
-        print("    No existing World Model v2, starting fresh")
+        wm = WorldModelV3().to(device)
+        print("    No existing World Model, starting fresh V3")
 
-    # Load YiCeNet engine for probe extraction
     config = YiCeNetConfig()
     engine = YiCeNetEngine(project_root=str(YICENET_ROOT))
     engine._lazy_load()
     model = engine._model
     model.eval()
 
-    # Load buffer
     samples = []
     with open(buffer_path, encoding="utf-8") as f:
         for line in f:
@@ -428,27 +468,6 @@ def _update_world_model_v2(buffer_path: Path):
     optimizer = torch.optim.AdamW(wm.parameters(), lr=1e-4)
     now = time.time()
 
-    # ── Compute batch-level normalization stats for ext vector ──
-    #    Log-transforms (recover natural distribution) then z-score
-    #    (remove scale differences) so all three dimensions contribute
-    #    equally to MSE without engineer-assigned weights.
-    import math as _math
-    _raw_targets = []
-    for s in batch:
-        tc = s.get("token_cost", 0.5)
-        rl = s.get("response_length", 0.5)
-        _raw_targets.append([
-            _math.log(max(tc, 1) + 1),      # log(t+1), clamp to ≥1
-            _math.log(max(rl, 1) + 1),      # log(t+1), clamp to ≥1
-            s.get("satisfaction", 0.0),     # already in [-1, 1]
-        ])
-    _t = torch.tensor(_raw_targets, dtype=torch.float32)
-    ext_mean = _t.mean(dim=0)
-    ext_std = _t.std(dim=0).clamp(min=1e-8)
-
-    def _normalize_ext(x: torch.Tensor) -> torch.Tensor:
-        return (x - ext_mean.to(x.device)) / ext_std.to(x.device)
-
     total_loss_a = 0.0
     total_loss_b = 0.0
     total_count = 0
@@ -456,17 +475,19 @@ def _update_world_model_v2(buffer_path: Path):
     for s in batch:
         text = s["user_text"]
         ts = s.get("timestamp", now)
+        satisfaction = s.get("satisfaction", 0.0)
 
-        # Encode and get probes
         ids, mask = encode(text, max_len=128)
         ids, mask = ids.to(device), mask.to(device)
 
         with torch.no_grad():
             out = model(ids, mask, tau=0.01, hard=True)
-            probes_t = out["probes"].to(device)  # (9,)
+            probes_t = out["probes"].to(device)
             hex_id = out["hexagram_idx"]
 
-        # Target hexagram distribution from reward signals
+        # Build 27-dim context vector from flywheel entry
+        ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
+
         reward_sig = {
             "continued": s.get("continued", True),
             "corrected": s.get("corrected", False),
@@ -482,51 +503,40 @@ def _update_world_model_v2(buffer_path: Path):
             completion_w=config.ext_completion_weight,
         ).to(device)
 
-        # Target external vector (log-transformed, then z-scored)
-        tc = s.get("token_cost", 0.5)
-        rl = s.get("response_length", 0.5)
+        # HeadB target: (satisfaction, tool_success_proxy, hex_conf)
         target_ext = torch.tensor(
-            [_math.log(max(tc, 1) + 1),
-             _math.log(max(rl, 1) + 1),
-             s.get("satisfaction", 0.0)],
+            [max(0.0, min(1.0, (satisfaction + 1.0) / 2.0)),
+             1.0 if s.get("completed", False) else 0.0,
+             0.5],
             dtype=torch.float32, device=device
         )
-        target_ext_norm = _normalize_ext(target_ext)
 
-        # Power-law weights
+        # HeadA mask
+        has_hex_evo = len(s.get("hexagram_evolution", [])) > 0
+        hex_mask_val = 1.0 if has_hex_evo else 0.0
+
         w_slow = power_law_weight(ts, now, WM_SLOW_TAU_DAYS, WM_ALPHA)
         w_fast = power_law_weight(ts, now, WM_FAST_TAU_DAYS, WM_ALPHA)
 
-        # 全內生噪聲感知：WM 自己判斷噪聲
         try:
             endo_w = wm.compute_endogenous_weight(
-                probes_t.unsqueeze(0), hex_id,
+                probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id,
                 target_dist.unsqueeze(0),
             ).item()
             w_slow *= endo_w
             w_fast *= endo_w
         except Exception:
-            pass  # 永不中斷飛輪
+            pass
 
-        # Forward through WM
-        pred_dist, pred_ext = wm(probes_t.unsqueeze(0), hex_id)
+        pred_dist, pred_ext = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id)
 
-        # Log-transform pred too (WM outputs raw-scale values)
-        pred_log = torch.stack([
-            pred_ext[0, 0].clamp(min=1).log1p(),
-            pred_ext[0, 1].clamp(min=1).log1p(),
-            pred_ext[0, 2],
-        ]).detach()
-
-        # Weighted loss (normalized ext space — remove scale dominance)
-        loss_a = (w_slow * F.kl_div(
+        kl = F.kl_div(
             pred_dist.clamp(min=1e-8).log(),
             target_dist.unsqueeze(0).clamp(min=1e-8),
             reduction="sum",
-        ))
-        pred_ext_norm = _normalize_ext(pred_log)
-        loss_b = (w_fast * (pred_ext_norm - target_ext_norm.unsqueeze(0)).pow(2).mean())
-
+        )
+        loss_a = w_slow * hex_mask_val * kl
+        loss_b = w_fast * (pred_ext - target_ext.unsqueeze(0)).pow(2).mean()
         loss = loss_a + WM_BETA * loss_b
 
         optimizer.zero_grad()
@@ -537,16 +547,13 @@ def _update_world_model_v2(buffer_path: Path):
         total_loss_b += loss_b.item()
         total_count += 1
 
-    import torch.nn.functional as F
-
     avg_loss_a = total_loss_a / max(total_count, 1)
     avg_loss_b = total_loss_b / max(total_count, 1)
     print(f"    Incremental update: {total_count} samples, "
           f"avg loss_A={avg_loss_a:.4f} loss_B={avg_loss_b:.4f}")
 
-    # Save updated world model
     wm.save(str(CHECKPOINT_DIR / "world_model_best.pt"))
-    print(f"    World Model v2 saved to {CHECKPOINT_DIR / 'world_model_best.pt'}")
+    print(f"    World Model v3 saved to {CHECKPOINT_DIR / 'world_model_best.pt'}")
 
 
 def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
@@ -556,30 +563,30 @@ def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
     import torch.nn.functional as F
     from yicenet.model import YiCeNet
     from yicenet.config import YiCeNetConfig
-    from yicenet.world_model import WorldModelV2, power_law_weight
+    from yicenet.world_model import WorldModelV3, power_law_weight
     from yicenet.tokenizer import encode
     from yicenet.rl_train import project_to_hexagram_space, compute_hexagram_reward
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load base model
     config = YiCeNetConfig()
     model = YiCeNet(config).to(device)
-    # Load from existing checkpoint if available
     existing = sorted(CHECKPOINT_DIR.glob("yicenet_v*.pt"))
     if existing:
-        base_path = existing[-1]  # latest by name (highest version)
+        base_path = existing[-1]
         saved = torch.load(str(base_path), map_location=device, weights_only=False)
         model.load_state_dict(saved["model_state_dict"], strict=False)
         print(f"    Loaded base model from {base_path}")
 
-    # Load World Model v2
     wm_path = CHECKPOINT_DIR / "world_model_best.pt"
     if wm_path.exists():
-        wm = WorldModelV2.load(str(wm_path), device)
+        try:
+            wm = WorldModelV3.load(str(wm_path), device)
+        except (KeyError, RuntimeError):
+            wm = WorldModelV3().to(device)
     else:
-        print(f"    Warning: no World Model v2 found, using random init")
-        wm = WorldModelV2().to(device)
+        print(f"    Warning: no World Model found, using random init V3")
+        wm = WorldModelV3().to(device)
     wm.eval()
     for p in wm.parameters():
         p.requires_grad = False
@@ -634,9 +641,12 @@ def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
             temperature=config.ext_projection_temperature,
         ).to(device)
 
+        # Context vector for WMv3
+        ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
+
         # WM prediction
         with torch.no_grad():
-            wm_pred_dist, _ = wm(probes_t.unsqueeze(0), hex_id)
+            wm_pred_dist, _ = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id)
 
         # Reward = distribution similarity
         reward = compute_hexagram_reward(wm_pred_dist, target_dist.unsqueeze(0))
@@ -734,15 +744,22 @@ def _record_evaluation(version: str, buffer_path: Path, checkpoint_path: str = "
 
             # Reward from 64-dim projection
             from yicenet.rl_train import project_to_hexagram_space, compute_hexagram_reward
-            from yicenet.world_model import WorldModelV2
+            from yicenet.world_model import WorldModelV3
             from yicenet.config import YiCeNetConfig
 
             config = YiCeNetConfig()
             wm_path = CHECKPOINT_DIR / "world_model_best.pt"
             if wm_path.exists():
-                wm = WorldModelV2.load(str(wm_path), device)
-                probes_t = out["probes"].to(device)
-                wm_pred, _ = wm(probes_t.unsqueeze(0), hex_idx)
+                try:
+                    wm = WorldModelV3.load(str(wm_path), device)
+                except (KeyError, RuntimeError):
+                    wm = None
+                if wm is not None:
+                    probes_t = out["probes"].to(device)
+                    ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
+                    wm_pred, _ = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_idx)
+                else:
+                    wm_pred = None
             else:
                 wm_pred = None
 
@@ -885,13 +902,16 @@ def _auto_promote(buffer_path: Path):
     active_wins = 0
     engine._model.eval()
 
-    # Load World Model once for reward evaluation
+    # Load World Model V3 once for reward evaluation
     world_model = None
     wm_path = CHECKPOINT_DIR / "world_model_best.pt"
     if wm_path.exists():
-        from yicenet.world_model import WorldModelV2
-        world_model = WorldModelV2.load(str(wm_path), device)
-        world_model.eval()
+        from yicenet.world_model import WorldModelV3
+        try:
+            world_model = WorldModelV3.load(str(wm_path), device)
+            world_model.eval()
+        except (KeyError, RuntimeError):
+            world_model = None
 
     with torch.no_grad():
         for s in samples:
@@ -899,7 +919,6 @@ def _auto_promote(buffer_path: Path):
             ids, mask = ids.to(device), mask.to(device)
             out = engine._model(ids, mask, tau=0.1, hard=True)
 
-            # Evaluate using 64-dim projection
             reward_sig = {
                 "continued": s.get("continued", True),
                 "corrected": s.get("corrected", False),
@@ -910,7 +929,8 @@ def _auto_promote(buffer_path: Path):
             target_dist = project_to_hexagram_space(reward_sig)
             if world_model is not None:
                 probes_t = out["probes"].to(device)
-                wm_pred, _ = world_model(probes_t.unsqueeze(0), out["hexagram_idx"])
+                ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
+                wm_pred, _ = world_model(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), out["hexagram_idx"])
                 reward_val = compute_hexagram_reward(
                     wm_pred.cpu(), target_dist.unsqueeze(0)
                 ).item()
