@@ -299,6 +299,204 @@ class WorldModelV2(nn.Module):
         return model
 
 
+class WorldModelV3(nn.Module):
+    """
+    雙頭世界模型 v3 — 27-dim context vector upgrade.
+
+    Input:  probes(B,9) + context_vector(B,27) + hexagram one-hot(B,64) = ℝ¹⁰⁰
+    HeadA:  hexagram distribution (B, 64)  — KL divergence
+    HeadB:  predicted metrics (B, 3)       — MSE (satisfaction, success, conf)
+    Params: Shared(100→128) + HeadA(128→64) + HeadB(128→3) ≈ 21K
+    """
+
+    def __init__(
+        self,
+        probe_dim: int = 9,
+        context_dim: int = 27,
+        num_hexagrams: int = 64,
+        shared_dim: int = 128,
+        num_external_metrics: int = 3,
+        slow_tau_days: float = 30.0,
+        fast_tau_days: float = 3.0,
+        alpha: float = 1.5,
+        beta: float = 0.3,
+    ):
+        super().__init__()
+
+        self.probe_dim = probe_dim
+        self.context_dim = context_dim
+        self.num_hexagrams = num_hexagrams
+        self.num_external_metrics = num_external_metrics
+        self.slow_tau_days = slow_tau_days
+        self.fast_tau_days = fast_tau_days
+        self.alpha = alpha
+        self.beta = beta
+
+        input_dim = probe_dim + context_dim + num_hexagrams  # 9+27+64=100
+
+        self.shared = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, shared_dim),
+            nn.GELU(),
+        )
+
+        self.head_hexagram = nn.Sequential(
+            nn.Linear(shared_dim, shared_dim // 2),
+            nn.GELU(),
+            nn.Linear(shared_dim // 2, num_hexagrams),
+        )
+
+        self.head_external = nn.Sequential(
+            nn.Linear(shared_dim, shared_dim // 2),
+            nn.GELU(),
+            nn.Linear(shared_dim // 2, num_external_metrics),
+            nn.Sigmoid(),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, p in self.named_parameters():
+            if p.dim() > 1:
+                nn.init.orthogonal_(p, gain=0.5)
+            if "bias" in name:
+                nn.init.zeros_(p)
+
+    def forward(
+        self,
+        probes: torch.Tensor,
+        context_vector: torch.Tensor,
+        hexagram_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            probes: (B, 9)
+            context_vector: (B, 27)
+            hexagram_id: (B,) selected hexagram ID
+
+        Returns:
+            hexagram_dist: (B, 64)
+            external_vec: (B, 3) predicted (satisfaction, success, conf)
+        """
+        hex_onehot = F.one_hot(hexagram_id, num_classes=self.num_hexagrams).float()
+        x = torch.cat([probes, context_vector, hex_onehot], dim=-1)
+        h = self.shared(x)
+        hex_logits = self.head_hexagram(h)
+        hexagram_dist = F.softmax(hex_logits / 0.5, dim=-1)
+        external_vec = self.head_external(h)
+        return hexagram_dist, external_vec
+
+    def compute_weighted_loss(
+        self,
+        pred_hex_dist: torch.Tensor,
+        target_hex_dist: torch.Tensor,
+        pred_ext_vec: torch.Tensor,
+        target_ext_vec: torch.Tensor,
+        weights_slow: torch.Tensor,
+        weights_fast: torch.Tensor,
+        hex_mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute power-law weighted dual-head loss.
+
+        Args:
+            hex_mask: (B,) float mask — 1.0 if hexagram_evolution present, 0.0 otherwise.
+                      When None, all samples contribute to HeadA.
+        """
+        kl = (target_hex_dist * (target_hex_dist.clamp(min=1e-8).log() - pred_hex_dist.clamp(min=1e-8).log())).sum(dim=-1)
+        if hex_mask is not None:
+            kl = kl * hex_mask
+        denom_slow = (weights_slow * (hex_mask if hex_mask is not None else 1.0)).sum().clamp(min=1e-8)
+        loss_A = (weights_slow * kl).sum() / denom_slow
+
+        se = (pred_ext_vec - target_ext_vec).pow(2).mean(dim=-1)
+        loss_B = (weights_fast * se).sum() / weights_fast.sum().clamp(min=1e-8)
+
+        total_loss = loss_A + self.beta * loss_B
+        return loss_A, loss_B, total_loss
+
+    @torch.no_grad()
+    def predict_headA(
+        self,
+        probes: torch.Tensor,
+        context_vector: torch.Tensor,
+        hexagram_id: torch.Tensor,
+    ) -> torch.Tensor:
+        self.eval()
+        hex_dist, _ = self.forward(probes, context_vector, hexagram_id)
+        return hex_dist
+
+    @torch.no_grad()
+    def predict_headB(
+        self,
+        probes: torch.Tensor,
+        context_vector: torch.Tensor,
+        hexagram_id: torch.Tensor,
+    ) -> torch.Tensor:
+        self.eval()
+        _, ext_vec = self.forward(probes, context_vector, hexagram_id)
+        return ext_vec
+
+    def compute_endogenous_weight(
+        self,
+        probes: torch.Tensor,
+        context_vector: torch.Tensor,
+        hexagram_id: torch.Tensor,
+        target_dist: torch.Tensor,
+    ) -> torch.Tensor:
+        if probes.dim() == 1:
+            probes = probes.unsqueeze(0)
+        if context_vector.dim() == 1:
+            context_vector = context_vector.unsqueeze(0)
+        if target_dist.dim() == 1:
+            target_dist = target_dist.unsqueeze(0)
+
+        with torch.no_grad():
+            pred_dist, _ = self.forward(probes, context_vector, hexagram_id)
+            kl = F.kl_div(
+                pred_dist.clamp(min=1e-8).log(),
+                target_dist.clamp(min=1e-8),
+                reduction="none"
+            ).sum(dim=-1)
+            weight = 1.0 - torch.sigmoid((kl - 0.03) * 50)
+        return weight
+
+    def save(self, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            "state_dict": self.state_dict(),
+            "config": {
+                "probe_dim": self.probe_dim,
+                "context_dim": self.context_dim,
+                "num_hexagrams": self.num_hexagrams,
+                "shared_dim": self.shared[1].out_features,
+                "num_external_metrics": self.num_external_metrics,
+                "slow_tau_days": self.slow_tau_days,
+                "fast_tau_days": self.fast_tau_days,
+                "alpha": self.alpha,
+                "beta": self.beta,
+            },
+        }, path)
+
+    @classmethod
+    def load(cls, path: str, device: str = "cpu") -> "WorldModelV3":
+        saved = torch.load(path, map_location=device, weights_only=False)
+        cfg = saved["config"]
+        model = cls(
+            probe_dim=cfg.get("probe_dim", 9),
+            context_dim=cfg.get("context_dim", 27),
+            num_hexagrams=cfg.get("num_hexagrams", 64),
+            shared_dim=cfg.get("shared_dim", 128),
+            num_external_metrics=cfg.get("num_external_metrics", 3),
+            slow_tau_days=cfg.get("slow_tau_days", 30.0),
+            fast_tau_days=cfg.get("fast_tau_days", 3.0),
+            alpha=cfg.get("alpha", 1.5),
+            beta=cfg.get("beta", 0.3),
+        ).to(device)
+        model.load_state_dict(saved["state_dict"])
+        return model
+
+
 # ── 前向兼容：舊版 WorldModel 的替身 ──
 # 舊代碼調用 WorldModel.load() → 改成 WorldModelV2.load()
 WorldModel = WorldModelV2
