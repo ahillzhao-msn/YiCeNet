@@ -321,10 +321,14 @@ def flywheel_run():
     if not new_samples:
         print("    No new data. Skipping.")
         state["last_run"] = time.time()
+        state["last_wm_version"] = state.get("last_wm_version", 0)
+        state["last_wm_buffer_count"] = state.get("last_wm_buffer_count", 0)
         save_state(state)
         return
 
     # Count current buffer size (scan_all_sources already wrote to it)
+    from yicenet.config import yicenet_data_dir
+    buffer_path = yicenet_data_dir() / "flywheel_buffer.jsonl"
     total_buffer = 0
     if buffer_path.exists():
         with open(buffer_path, encoding="utf-8") as f:
@@ -344,9 +348,21 @@ def flywheel_run():
         save_state(state)
         return
 
-    # ── Step 3: Incremental world model v2 update ──
-    print("\n  Step 3: Updating World Model v3 (power-law weighted)...")
-    _update_world_model_v3(buffer_path)
+    # ── Step 3: Incremental world model v3 update ──
+    # Skip WM training if buffer hasn't grown enough since last training.
+    # (Full-batch training with probe extraction is CPU-intensive ~2min/epoch.)
+    last_wm_v = state.get("last_wm_version", 0)
+    buffer_delta = total_buffer - state.get("last_wm_buffer_count", 0)
+    if buffer_delta >= 100 or last_wm_v == 0:
+        print(f"\n  Step 3: Updating World Model v3 ({buffer_delta} new since last WM training)...")
+        try:
+            _update_world_model_v3(buffer_path)
+            state["last_wm_version"] = state.get("version_counter", 19)
+            state["last_wm_buffer_count"] = total_buffer
+        except Exception as exc:
+            print(f"    WM training failed: {exc}")
+    else:
+        print(f"\n  Step 3: Skipping WM training (only {buffer_delta} new, need 100+)")
 
     # ── Step 4: RL fine-tune v5 ──
     print("\n  Step 4: RL fine-tuning v5 (64-dim projection reward)...")
