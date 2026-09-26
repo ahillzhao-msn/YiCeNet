@@ -238,7 +238,7 @@ class HooksAdapter(ABC):
     @staticmethod
     def _read_payload() -> dict:
         try:
-            raw = sys.stdin.read().strip()
+            raw = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
             return json.loads(raw) if raw else {}
         except Exception:
             return {}

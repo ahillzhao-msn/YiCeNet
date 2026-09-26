@@ -21,7 +21,9 @@ mode = os.environ.get("YICENET_MODE", "daemon")
 # Read stdin once and pass explicitly.
 _raw = ""
 try:
-    _raw = sys.stdin.read().strip()
+    # Claude Code sends UTF-8; text-mode stdin on Windows uses the locale codepage and turns
+    # CJK prompts into mojibake with lone surrogates that the tokenizer rejects.
+    _raw = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
 except Exception:
     pass
 _payload: dict = {}
