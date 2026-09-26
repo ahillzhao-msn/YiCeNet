@@ -5,7 +5,7 @@
     "avg_reward": 0.9903,
     "win_rate": 1.0,
     "created": "2026-06-01T13:49:51",
-    "notes": "v18 \u2014 Flywheel v5 auto-train, highest reward (0.9903)"
+    "notes": "v18 \u00e2\u20ac\u201d Flywheel v5 auto-train, highest reward (0.9903)"
   },
   "fallback": {
     "version": "v18",
@@ -16,11 +16,11 @@
     "notes": "v18 fallback"
   },
   "ready": {
-    "version": "v42",
-    "path": "yicenet_v42.pt",
-    "avg_reward": 0.9515,
+    "version": "v41",
+    "path": "yicenet_v41.pt",
+    "avg_reward": 0.9516,
     "win_rate": 1.0,
-    "created": "2026-09-25T20:44:53",
+    "created": "2026-09-25T21:01:14",
     "notes": "Flywheel v5 auto-train 2026-09-25"
   },
   "history": [
@@ -238,14 +238,6 @@
       "avg_reward": 0.9569,
       "win_rate": 1.0,
       "created": "2026-09-25T20:24:10",
-      "notes": "Flywheel v5 auto-train 2026-09-25"
-    },
-    {
-      "version": "v41",
-      "path": "yicenet_v41.pt",
-      "avg_reward": 0.9569,
-      "win_rate": 1.0,
-      "created": "2026-09-25T20:29:12",
       "notes": "Flywheel v5 auto-train 2026-09-25"
     }
   ]
