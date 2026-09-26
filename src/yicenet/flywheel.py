@@ -21,6 +21,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# Reconfigure to UTF-8 so CJK characters and arrows print on Windows.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 # ── Paths ──
 from yicenet.config import yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
 

@@ -45,6 +45,7 @@ Documentation = "https://github.com/ahillzhao-msn/YiCeNet#readme"
 yicenet-bootstrap = "yicenet.bootstrap:main"
 yicenet-uninstall = "yicenet.bootstrap:uninstall_cli"
 yicenet-serve = "yicenet.mcp_server:main"
+yicenet-kimi-hook = "yicenet.tools.kimi_code_hook:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yicenet"]

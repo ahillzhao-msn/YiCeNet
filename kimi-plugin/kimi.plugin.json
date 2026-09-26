@@ -1,0 +1,124 @@
+{
+  "name": "yicenet",
+  "version": "2.1.0",
+  "description": "YiCeNet (易策网络) — local 64-hexagram orchestration router for Kimi Code. Auto-injects hexagram context, collects turn feedback, and exposes explicit YiCeNet MCP tools.",
+  "keywords": ["yicenet", "iching", "orchestration", "hexagram", "context-management"],
+  "author": "ahillzhao-msn",
+  "homepage": "https://github.com/ahillzhao-msn/YiCeNet",
+  "license": "MIT",
+  "interface": {
+    "displayName": "YiCeNet",
+    "shortDescription": "Local hexagram router + context prescription for Kimi Code",
+    "longDescription": "YiCeNet maps user intent to one of 64 I-Ching hexagrams in ~4ms, fully on-device. This plugin injects the hexagram framing into every turn and records feedback for continuous learning.",
+    "developerName": "ahillzhao-msn",
+    "websiteURL": "https://github.com/ahillzhao-msn/YiCeNet"
+  },
+  "mcpServers": {
+    "yicenet": {
+      "command": "yicenet-serve"
+    }
+  },
+  "hooks": [
+    {
+      "event": "UserPromptSubmit",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "pre_message_send"],
+      "timeout": 15
+    },
+    {
+      "event": "Stop",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "stop"],
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "post_tool_use"],
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUseFailure",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "post_tool_use_failure"],
+      "timeout": 10
+    },
+    {
+      "event": "PreToolUse",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "pre_tool_use"],
+      "timeout": 5
+    },
+    {
+      "event": "SessionStart",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "session_start"],
+      "timeout": 5
+    },
+    {
+      "event": "SessionEnd",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "session_end"],
+      "timeout": 5
+    },
+    {
+      "event": "PreCompact",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "pre_compact"],
+      "timeout": 10
+    },
+    {
+      "event": "PostCompact",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "post_compact"],
+      "timeout": 5
+    },
+    {
+      "event": "SubagentStart",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "subagent_start"],
+      "timeout": 5
+    },
+    {
+      "event": "SubagentStop",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "subagent_stop"],
+      "timeout": 5
+    },
+    {
+      "event": "StopFailure",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "stop_failure"],
+      "timeout": 5
+    },
+    {
+      "event": "Interrupt",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "interrupt"],
+      "timeout": 5
+    },
+    {
+      "event": "PermissionRequest",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "permission_request"],
+      "timeout": 5
+    },
+    {
+      "event": "PermissionResult",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "permission_result"],
+      "timeout": 5
+    },
+    {
+      "event": "Notification",
+      "command": "python",
+      "args": ["{{plugin_root}}/hooks/yicenet_kimi_hook.py", "notification"],
+      "timeout": 5
+    }
+  ],
+  "skills": "./skills",
+  "sessionStart": {
+    "skill": "using-yicenet"
+  },
+  "skillInstructions": "When YiCeNet context is present in the conversation, treat the hexagram and action as a lightweight structural hint, not a command. Use env_confidence and context_status to decide how strongly to weight the suggestion."
+}
