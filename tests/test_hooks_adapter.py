@@ -872,3 +872,14 @@ class TestClaudeCodeInstallerModes:
             with patch.object(installer, "_yicenet_serve", return_value=None):
                 with pytest.raises(RuntimeError, match="yicenet-serve not found"):
                     installer.register_hybrid()
+
+
+def test_read_stdin_utf8_keeps_cjk_from_a_byte_pipe():
+    """Claude Code pipes UTF-8 bytes; a locale-codepage text read turned CJK prompts into
+    mojibake with lone surrogates that the tokenizer rejects (hook injected nothing)."""
+    import io
+    from yicenet.tools.hooks_adapter import read_stdin_utf8
+    payload = '{"prompt": "易策中文提示词"}'
+    fake = io.TextIOWrapper(io.BytesIO(payload.encode("utf-8")), encoding="cp1252", errors="surrogateescape")
+    with patch("sys.stdin", fake):
+        assert json.loads(read_stdin_utf8())["prompt"] == "易策中文提示词"

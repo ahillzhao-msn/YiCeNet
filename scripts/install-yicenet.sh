@@ -25,6 +25,7 @@ if command -v hermes &>/dev/null; then
 fi
 if [ -z "$VENV_PY" ]; then
     for cand in \
+        "$HERMES_HOME/hermes-agent/.venv/bin/python" \
         "$HERMES_HOME/hermes-agent/venv/bin/python" \
         "$HERMES_HOME/.venv/bin/python" \
         "$HERMES_HOME/venv/bin/python"; do
@@ -95,8 +96,9 @@ curl -sL "$RELEASE_URL/$WHEEL_FILE" -o "$TMPDIR/$WHEEL_FILE"
 echo "  → Installing into Hermes venv..."
 uv pip install --python "$VENV_PY" "$TMPDIR/$WHEEL_FILE"
 
-# Verify
+# Verify + unpack the bundled tokenizer (local only, never Hugging Face)
 "$VENV_PY" -c "from yicenet import __version__; print(f'✓ YiCeNet v{__version__} installed')"
+"$VENV_PY" -c "from yicenet.tokenizer import install_tokenizer; install_tokenizer()"
 
 # ── 5. Download checkpoints from release ──
 echo ""

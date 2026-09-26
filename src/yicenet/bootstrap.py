@@ -459,13 +459,10 @@ def bootstrap(
 
     print("── Phase 4b: Tokenizer ──")
     try:
-        from yicenet.tokenizer import download_tokenizer, tokenizer_available
-        if tokenizer_available():
-            print("  ✓ Already cached")
-        else:
-            download_tokenizer()
+        from yicenet.tokenizer import install_tokenizer
+        install_tokenizer()
     except Exception as e:
-        print(f"  ⚠ {e}\n  (Tokenizer will load from HF Hub at first use)")
+        print(f"  ⚠ {e}\n  (the bundled tokenizer is used directly at first use)")
     print()
 
     print("── Phase 5: Data Root ──")

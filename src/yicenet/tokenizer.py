@@ -8,173 +8,88 @@ Two phases:
 The mapping file is saved at data/qwen_to_yicenet.json.
 Vocab_size=8000: IDs 0=PAD, 1-7999=top freq tokens, rest→1 (UNK)
 
-Tokenizer files live at ~/.yicenet/tokenizer/qwen2.5-0.5b/ (downloaded
-once by bootstrap, never hits HF Hub at runtime).
+The Qwen2.5 BPE is loaded with the standalone `tokenizers` library straight from
+tokenizer.json — no `transformers` import, no Hugging Face Hub access, ever.
+Resolution: ~/.yicenet/tokenizer/qwen2.5-0.5b/tokenizer.json if present, otherwise the
+copy bundled with the package (data/qwen2.5-0.5b-tokenizer.json.gz). Token IDs are
+identical to transformers' Qwen2TokenizerFast (same tokenizer.json, no special tokens
+added by Qwen2's post-processor).
 """
 
+import gzip
 import json
-import os
 from collections import Counter
 from pathlib import Path
 from typing import Optional
 
 import torch
 
-from .config import load_user_config, yicenet_data_dir, yicenet_home
+from .config import yicenet_data_dir
 
 _TOK = None  # lazy-loaded Qwen tokenizer
 _VOCAB_MAP = None  # lazy-loaded {qwen_id: yicenet_id}
 
-# ── Local tokenizer dir (~/.yicenet/tokenizer/qwen2.5-0.5b/) ──
-
-_QWEN_MODEL = "Qwen/Qwen2.5-0.5B"
 _TOKENIZER_SUBDIR = "qwen2.5-0.5b"
-
-# Files needed for offline tokenizer (from HF Hub)
-_TOKENIZER_FILES = [
-    "tokenizer.json",       # ~6.9 MB — BPE model
-    "vocab.json",           # ~2.7 MB
-    "merges.txt",           # ~1.6 MB
-    "tokenizer_config.json",
-    "config.json",
-]
+_BUNDLED = Path(__file__).parent / "data" / "qwen2.5-0.5b-tokenizer.json.gz"
 
 
 def _tokenizer_dir() -> Path:
-    """~/.yicenet/tokenizer/qwen2.5-0.5b/"""
-    return yicenet_home() / "tokenizer" / _TOKENIZER_SUBDIR
+    """~/.yicenet/tokenizer/qwen2.5-0.5b/ — user-wide on purpose: yicenet_home() can point at a
+    source tree or a container path, the tokenizer is shared by every YiCeNet on this machine."""
+    return Path.home() / ".yicenet" / "tokenizer" / _TOKENIZER_SUBDIR
 
 
 def tokenizer_available() -> bool:
-    """Check if tokenizer files are cached locally."""
-    d = _tokenizer_dir()
-    return d.exists() and (d / "tokenizer.json").exists()
+    """Check if the tokenizer is installed locally (or at least bundled)."""
+    return (_tokenizer_dir() / "tokenizer.json").exists() or _BUNDLED.exists()
 
 
-# ── Download ──
-
-
-def download_tokenizer(hf_token: str = "") -> bool:
-    """Download Qwen2.5-0.5B tokenizer files to ~/.yicenet/tokenizer/.
-
-    Uses huggingface_hub to download only the tokenizer files (not the
-    full model). Falls back to raw HTTPS downloads if huggingface_hub
-    is not available (rare).
-
-    Args:
-        hf_token: Optional HF Hub token for authenticated downloads.
-
-    Returns:
-        True if download succeeded or files already present.
-    """
-    target = _tokenizer_dir()
-    if tokenizer_available():
-        print(f"[YiCeNet Tokenizer] Already cached at {target}")
+def install_tokenizer() -> bool:
+    """Unpack the bundled tokenizer.json to ~/.yicenet/tokenizer/ (local, no network)."""
+    target = _tokenizer_dir() / "tokenizer.json"
+    if target.exists():
+        print(f"[YiCeNet Tokenizer] Already installed at {target.parent}")
         return True
-
-    target.mkdir(parents=True, exist_ok=True)
-    print(f"[YiCeNet Tokenizer] Downloading {_QWEN_MODEL} tokenizer to {target}...")
-
-    try:
-        _download_via_hf_hub(target, hf_token)
-    except ImportError:
-        _download_via_requests(target, hf_token)
-
-    ok = tokenizer_available()
-    if ok:
-        total = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
-        print(f"[YiCeNet Tokenizer] Done ({total / 1024 / 1024:.1f} MB)")
-    else:
-        print(f"[YiCeNet Tokenizer] WARNING: some files failed to download")
-    return ok
+    if not _BUNDLED.exists():
+        print(f"[YiCeNet Tokenizer] Bundled tokenizer missing: {_BUNDLED}")
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(gzip.decompress(_BUNDLED.read_bytes()))
+    print(f"[YiCeNet Tokenizer] Installed to {target.parent}")
+    return True
 
 
-def _download_via_hf_hub(target: Path, hf_token: str) -> None:
-    """Download tokenizer files using huggingface_hub."""
-    from huggingface_hub import hf_hub_download
+class _QwenBPE:
+    """Thin wrapper so call sites keep `tok.encode(text) -> list[int]`."""
 
-    headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
-    for fname in _TOKENIZER_FILES:
-        try:
-            path = hf_hub_download(
-                repo_id=_QWEN_MODEL,
-                filename=fname,
-                local_dir=str(target),
-                local_dir_use_symlinks=False,
-                token=hf_token or None,
-            )
-            print(f"  ✓ {fname}")
-        except Exception as e:
-            print(f"  ✗ {fname}: {e}")
+    def __init__(self, tok) -> None:
+        self._tok = tok
+
+    def encode(self, text: str) -> list[int]:
+        return self._tok.encode(text).ids
 
 
-def _download_via_requests(target: Path, hf_token: str) -> None:
-    """Fallback: download tokenizer files via raw HTTPS."""
-    import requests
+def _get_qwen_tokenizer() -> _QwenBPE:
+    """Lazy-load the Qwen2.5 BPE (local file first, bundled copy second)."""
+    global _TOK
+    if _TOK is None:
+        from tokenizers import Tokenizer
 
-    base = f"https://huggingface.co/{_QWEN_MODEL}/resolve/main"
-    headers = {"User-Agent": "YiCeNet/1.0"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
-
-    for fname in _TOKENIZER_FILES:
-        url = f"{base}/{fname}"
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            (target / fname).write_bytes(resp.content)
-            print(f"  ✓ {fname}  ({len(resp.content) / 1024:.0f} KB)")
-        except Exception as e:
-            print(f"  ✗ {fname}: {e}")
-
-
-# ── Load tokenizer (local first, HF fallback) ──
+        local = _tokenizer_dir() / "tokenizer.json"
+        if local.exists():
+            tok = Tokenizer.from_file(str(local))
+        elif _BUNDLED.exists():
+            tok = Tokenizer.from_str(gzip.decompress(_BUNDLED.read_bytes()).decode("utf-8"))
+        else:
+            raise FileNotFoundError(
+                f"Qwen2.5 tokenizer not found at {local} or {_BUNDLED}; reinstall yicenet.")
+        _TOK = _QwenBPE(tok)
+    return _TOK
 
 
 def _map_path() -> Path:
     """Location of the Qwen→YiCeNet vocab mapping file."""
     return yicenet_data_dir() / "qwen_to_yicenet.json"
-
-
-def _get_qwen_tokenizer():
-    """Lazy-load Qwen tokenizer from local cache or HF Hub.
-
-    Resolution order:
-      1. ~/.yicenet/tokenizer/qwen2.5-0.5b/   (local, preferred)
-      2. HF Hub cache  (via TRANSFORMERS_OFFLINE guard)
-      3. HF Hub network (last resort, may block)
-
-    Before importing `transformers`, reads ~/.yicenet/config.yaml's
-    `runtime.transformers_offline` and `runtime.hf_hub_offline` to set
-    the corresponding environment variables.  This suppresses HF Hub
-    network probes even when the tokenizer is cached locally — the
-    config.yaml's ``runtime:`` section was previously doc-only.
-    """
-    global _TOK
-    if _TOK is None:
-        # ── Apply runtime config before importing transformers ──
-        # load_user_config() is cached, so repeated calls are cheap.
-        # setdefault() preserves any explicit env override from the user.
-        _rt = load_user_config().get("runtime", {})
-        if _rt.get("transformers_offline", False):
-            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-        if _rt.get("hf_hub_offline", False):
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
-        from transformers import AutoTokenizer
-
-        local_dir = _tokenizer_dir()
-        if local_dir.exists() and (local_dir / "tokenizer.json").exists():
-            # Local path — no network, no remote code execution
-            _TOK = AutoTokenizer.from_pretrained(
-                str(local_dir), trust_remote_code=False
-            )
-        else:
-            # Fallback to HF Hub (with env-var guard for offline mode)
-            _TOK = AutoTokenizer.from_pretrained(
-                _QWEN_MODEL, trust_remote_code=True
-            )
-    return _TOK
 
 
 def _load_vocab_map() -> dict[int, int]:

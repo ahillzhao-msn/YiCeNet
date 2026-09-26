@@ -291,7 +291,8 @@ def main() -> None:
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             try:
-                from transformers import AutoTokenizer as _  # noqa: F401
+                from yicenet.tokenizer import _get_qwen_tokenizer
+                _get_qwen_tokenizer()
                 from yicenet.yicenet_engine import YiCeNetEngine as _  # noqa: F401
             except Exception:
                 pass

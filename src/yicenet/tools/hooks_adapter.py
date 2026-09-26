@@ -26,6 +26,18 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 
+
+def read_stdin_utf8() -> str:
+    """Hook payload from stdin, decoded as UTF-8 (what Claude Code sends).
+
+    Text-mode stdin on Windows uses the locale codepage and turns CJK prompts into mojibake
+    with lone surrogates; read the bytes when a binary buffer exists (a real pipe), otherwise
+    (e.g. an in-memory stream) fall back to the text interface.
+    """
+    buf = getattr(sys.stdin, "buffer", None)
+    raw = buf.read().decode("utf-8", errors="replace") if buf is not None else sys.stdin.read()
+    return raw.strip()
+
 class HooksAdapter(ABC):
     """Shared base for all hook-lifecycle platform adapters.
 
@@ -238,7 +250,7 @@ class HooksAdapter(ABC):
     @staticmethod
     def _read_payload() -> dict:
         try:
-            raw = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
+            raw = read_stdin_utf8()
             return json.loads(raw) if raw else {}
         except Exception:
             return {}

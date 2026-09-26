@@ -28,10 +28,8 @@ classifiers = [
 dependencies = [
     "torch>=2.0.0",
     "numpy>=1.24",
-    "transformers>=4.35",
-    "sentencepiece>=0.1",
+    "tokenizers>=0.15",
     "tqdm>=4.60",
-    "huggingface-hub>=0.20",
     "pyyaml>=6.0",
     "mcp>=1.0",
 ]
