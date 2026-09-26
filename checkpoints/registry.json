@@ -16,12 +16,12 @@
     "notes": "v18 fallback"
   },
   "ready": {
-    "version": "v21",
-    "path": "yicenet_v21.pt",
-    "avg_reward": 0.9732,
+    "version": "v39",
+    "path": "yicenet_v39.pt",
+    "avg_reward": 0.9612,
     "win_rate": 1.0,
-    "created": "2026-06-22T17:27:13",
-    "notes": "Flywheel v5 auto-train 2026-06-22"
+    "created": "2026-08-13T08:24:08",
+    "notes": "Flywheel v5 auto-train 2026-08-13"
   },
   "history": [
     {
@@ -63,6 +63,166 @@
       "win_rate": 1.0,
       "created": "2026-06-17T11:41:47",
       "notes": "Flywheel v5 auto-train 2026-06-17"
+    },
+    {
+      "version": "v19",
+      "path": "yicenet_v19.pt",
+      "avg_reward": 0.9888,
+      "win_rate": 1.0,
+      "created": "2026-07-18T18:07:51",
+      "notes": "Flywheel v5 auto-train 2026-07-18"
+    },
+    {
+      "version": "v20",
+      "path": "yicenet_v20.pt",
+      "avg_reward": 0.9765,
+      "win_rate": 1.0,
+      "created": "2026-07-18T18:09:40",
+      "notes": "Flywheel v5 auto-train 2026-07-18"
+    },
+    {
+      "version": "v21",
+      "path": "yicenet_v21.pt",
+      "avg_reward": 0.9809,
+      "win_rate": 1.0,
+      "created": "2026-07-18T20:24:11",
+      "notes": "Flywheel v5 auto-train 2026-07-18"
+    },
+    {
+      "version": "v22",
+      "path": "yicenet_v22.pt",
+      "avg_reward": 0.981,
+      "win_rate": 1.0,
+      "created": "2026-07-31T14:24:09",
+      "notes": "Flywheel v5 auto-train 2026-07-31"
+    },
+    {
+      "version": "v23",
+      "path": "yicenet_v23.pt",
+      "avg_reward": 0.9808,
+      "win_rate": 1.0,
+      "created": "2026-07-31T20:24:10",
+      "notes": "Flywheel v5 auto-train 2026-07-31"
+    },
+    {
+      "version": "v24",
+      "path": "yicenet_v24.pt",
+      "avg_reward": 0.9807,
+      "win_rate": 1.0,
+      "created": "2026-08-01T14:24:09",
+      "notes": "Flywheel v5 auto-train 2026-08-01"
+    },
+    {
+      "version": "v25",
+      "path": "yicenet_v25.pt",
+      "avg_reward": 0.9808,
+      "win_rate": 1.0,
+      "created": "2026-08-01T20:24:09",
+      "notes": "Flywheel v5 auto-train 2026-08-01"
+    },
+    {
+      "version": "v26",
+      "path": "yicenet_v26.pt",
+      "avg_reward": 0.9801,
+      "win_rate": 1.0,
+      "created": "2026-08-09T08:24:11",
+      "notes": "Flywheel v5 auto-train 2026-08-09"
+    },
+    {
+      "version": "v27",
+      "path": "yicenet_v27.pt",
+      "avg_reward": 0.9796,
+      "win_rate": 1.0,
+      "created": "2026-08-09T14:24:15",
+      "notes": "Flywheel v5 auto-train 2026-08-09"
+    },
+    {
+      "version": "v28",
+      "path": "yicenet_v28.pt",
+      "avg_reward": 0.978,
+      "win_rate": 1.0,
+      "created": "2026-08-09T20:24:18",
+      "notes": "Flywheel v5 auto-train 2026-08-09"
+    },
+    {
+      "version": "v29",
+      "path": "yicenet_v29.pt",
+      "avg_reward": 0.9795,
+      "win_rate": 1.0,
+      "created": "2026-08-10T02:24:13",
+      "notes": "Flywheel v5 auto-train 2026-08-10"
+    },
+    {
+      "version": "v30",
+      "path": "yicenet_v30.pt",
+      "avg_reward": 0.9809,
+      "win_rate": 1.0,
+      "created": "2026-08-10T08:24:14",
+      "notes": "Flywheel v5 auto-train 2026-08-10"
+    },
+    {
+      "version": "v31",
+      "path": "yicenet_v31.pt",
+      "avg_reward": 0.9809,
+      "win_rate": 1.0,
+      "created": "2026-08-10T20:24:14",
+      "notes": "Flywheel v5 auto-train 2026-08-10"
+    },
+    {
+      "version": "v32",
+      "path": "yicenet_v32.pt",
+      "avg_reward": 0.9793,
+      "win_rate": 1.0,
+      "created": "2026-08-11T02:24:11",
+      "notes": "Flywheel v5 auto-train 2026-08-11"
+    },
+    {
+      "version": "v33",
+      "path": "yicenet_v33.pt",
+      "avg_reward": 0.9766,
+      "win_rate": 1.0,
+      "created": "2026-08-11T08:24:16",
+      "notes": "Flywheel v5 auto-train 2026-08-11"
+    },
+    {
+      "version": "v34",
+      "path": "yicenet_v34.pt",
+      "avg_reward": 0.9717,
+      "win_rate": 1.0,
+      "created": "2026-08-11T14:24:13",
+      "notes": "Flywheel v5 auto-train 2026-08-11"
+    },
+    {
+      "version": "v35",
+      "path": "yicenet_v35.pt",
+      "avg_reward": 0.9685,
+      "win_rate": 1.0,
+      "created": "2026-08-11T20:24:15",
+      "notes": "Flywheel v5 auto-train 2026-08-11"
+    },
+    {
+      "version": "v36",
+      "path": "yicenet_v36.pt",
+      "avg_reward": 0.965,
+      "win_rate": 1.0,
+      "created": "2026-08-12T02:24:09",
+      "notes": "Flywheel v5 auto-train 2026-08-12"
+    },
+    {
+      "version": "v37",
+      "path": "yicenet_v37.pt",
+      "avg_reward": 0.9642,
+      "win_rate": 1.0,
+      "created": "2026-08-12T20:24:15",
+      "notes": "Flywheel v5 auto-train 2026-08-12"
+    },
+    {
+      "version": "v38",
+      "path": "yicenet_v38.pt",
+      "avg_reward": 0.9647,
+      "win_rate": 1.0,
+      "created": "2026-08-13T02:24:09",
+      "notes": "Flywheel v5 auto-train 2026-08-13"
     }
   ]
 }
