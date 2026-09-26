@@ -12,6 +12,7 @@
 #   install-claudecode-hooks.sh       — Claude Code hook installer
 #   install-hermes-hooks.sh          — Hermes hook installer
 #   flywheel-run.sh / .bat           — Environment-adaptive flywheel launcher
+#   yicenet-hook-<os>-<arch>[.exe]    — native hook client (native/yicenet-hook)
 #
 # Stable names (yicenet_base.pt, world_model.pt) allow yicenet-bootstrap
 # to auto-download from /releases/latest/download/ without knowing the version.
@@ -30,8 +31,42 @@ on:
         type: string
 
 jobs:
+  # ── Native hook client, one binary per platform ───────────────────────────
+  native-hook:
+    name: yicenet-hook (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest,   asset: yicenet-hook-windows-x64.exe, bin: build/Release/yicenet-hook.exe }
+          - { os: ubuntu-latest,    asset: yicenet-hook-linux-x64,       bin: build/yicenet-hook }
+          - { os: ubuntu-24.04-arm, asset: yicenet-hook-linux-arm64,     bin: build/yicenet-hook }
+          - { os: macos-latest,     asset: yicenet-hook-macos-arm64,     bin: build/yicenet-hook }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # bundle libstdc++/libgcc so the binary runs on any glibc distro
+            cmake -S native/yicenet-hook -B build -DCMAKE_BUILD_TYPE=Release \
+                  "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
+          else
+            cmake -S native/yicenet-hook -B build -DCMAKE_BUILD_TYPE=Release
+          fi
+          cmake --build build --config Release
+          mkdir -p out && cp "${{ matrix.bin }}" "out/${{ matrix.asset }}"
+      - name: Smoke test (no daemon → silent exit 0)
+        shell: bash
+        run: echo '{}' | YICENET_DAEMON_PORT=1 YICENET_DAEMON_PYTHON=/nonexistent "out/${{ matrix.asset }}" claude-code pre
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+
   release:
     name: Build & Release
+    needs: native-hook
     runs-on: ubuntu-latest
     permissions:
       contents: write   # required: create releases and upload assets
@@ -159,6 +194,13 @@ jobs:
           echo "=== Final release assets ==="
           ls -lah release-assets/
 
+      # ── Native hook binaries (from the native-hook job) ─────────────────
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: yicenet-hook-*
+          path: release-assets
+          merge-multiple: true
+
       # ── Create GitHub Release ─────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -194,6 +236,7 @@ jobs:
             | `install-claudecode-hooks.sh` | — | Claude Code hook + MCP auto-installer |
             | `install-hermes-hooks.sh` | — | Hermes plugin installer |
             | `flywheel-run.sh` / `.bat` | — | Environment-adaptive flywheel launcher |
+            | `yicenet-hook-<os>-<arch>` | ~0.2 MB | Native hook client for Claude Code / Kimi Code (`yicenet-bootstrap` installs it to `~/.yicenet/bin`) |
 
             ---
 
@@ -219,3 +262,4 @@ jobs:
             release-assets/install-hermes-hooks.sh
             release-assets/flywheel-run.sh
             release-assets/flywheel-run.bat
+            release-assets/yicenet-hook-*

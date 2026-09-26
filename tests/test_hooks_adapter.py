@@ -8,8 +8,10 @@ Covers:
   MCPAdapter          — isolated from HooksAdapter, Protocol-compliant
   predict_for_turn_payload — shared logic path
   pre_message_send / stop  — delivery and routing
-  hook_server         — HTTP endpoints (start/stop/pre)
-  ipc_hook            — thin IPC client
+  hook_server         — HTTP routing /hook/<event>?platform=<id>
+  daemon.platforms    — per-platform handlers (Claude Code, Kimi Code)
+  ipc_hook            — Python twin of the native client
+  native client       — native/yicenet-hook (when built)
   ClaudeCodeInstaller — register_mcp / register_hybrid / unregister_mcp
 """
 from __future__ import annotations
@@ -18,6 +20,7 @@ import json
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from io import StringIO
 from pathlib import Path
@@ -602,138 +605,205 @@ class TestHermesHookEntryPoints:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestHookServer:
+    """The daemon routes POST /hook/<event>?platform=<id> to daemon.platforms and
+    returns the handler's bytes verbatim as the hook's stdout."""
 
-    @pytest.fixture(autouse=True)
-    def reset_server(self):
-        """Ensure hook_server module state is clean between tests."""
+    @pytest.fixture
+    def server(self, monkeypatch):
         import yicenet.daemon.hook_server as hs
-        yield
-        hs._adapter = None
+        import yicenet.daemon.platforms as pf
+        from http.server import ThreadingHTTPServer
 
-    def test_post_hook_pre_calls_predict(self):
-        """Test _handle_pre calls predict_for_turn_payload on the adapter.
+        calls = []
 
-        Creates a minimal _HookHandler instance and calls _handle_pre directly.
-        """
-        import yicenet.daemon.hook_server as hs
-        from unittest.mock import MagicMock
+        def fake_routes():
+            return {
+                "pre": lambda p: calls.append(("pre", p)) or b"[YiCeNet] " + json.dumps(p).encode(),
+                "stop": lambda p: calls.append(("stop", p)) or b"",
+                "boom": lambda p: 1 / 0,
+            }
 
-        # Minimal handler instance with required attributes
-        mock_send = MagicMock()
-        handler = hs._HookHandler
-        instance = handler.__new__(handler)
-        instance._send = mock_send
-        instance.path = "/hook/pre"
-        instance.headers = {}
+        monkeypatch.setattr(pf, "_FACTORIES", {"claude-code": fake_routes, "kimi-code": fake_routes})
+        monkeypatch.setattr(pf, "_routes", {})
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), hs._HookHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        yield srv.server_address[1], calls
+        srv.shutdown()
+        srv.server_close()
 
-        mock_adapter = MagicMock()
-        fake_result = {"yicenet": {"hexagram": "乾", "label": "x", "session_id": "abc"}}
-        mock_adapter.predict_for_turn_payload.return_value = fake_result
-
-        saved = hs._adapter
+    @staticmethod
+    def _post(port, path, body=b"{}"):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=body, method="POST")
         try:
-            hs._adapter = mock_adapter
-            instance._handle_pre({"prompt": "test", "session_id": "abc"})
-        finally:
-            hs._adapter = saved
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
 
-        mock_adapter.predict_for_turn_payload.assert_called_once()
-        # Should have returned the fake result
-        mock_send.assert_called_once_with(200, fake_result)
+    def test_health(self, server):
+        port, _ = server
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            assert json.loads(r.read())["ok"] is True
 
-    def test_post_hook_stop_calls_stop(self):
-        """Test _handle_stop calls stop on the adapter."""
-        import yicenet.daemon.hook_server as hs
-        from unittest.mock import MagicMock
+    def test_routes_by_platform_and_returns_raw_stdout(self, server):
+        port, calls = server
+        body = json.dumps({"prompt": "重构"}, ensure_ascii=False).encode("utf-8")
+        code, out = self._post(port, "/hook/pre?platform=kimi-code", body)
+        assert code == 200
+        assert out == b"[YiCeNet] " + json.dumps({"prompt": "重构"}).encode()
+        assert calls == [("pre", {"prompt": "重构"})]
 
-        handler = hs._HookHandler
-        instance = handler.__new__(handler)
-        instance._send = MagicMock()
-        instance.path = "/hook/stop"
-        instance.headers = {}
-        mock_adapter = MagicMock()
+    def test_platform_defaults_to_claude_code(self, server):
+        port, calls = server
+        assert self._post(port, "/hook/stop") == (200, b"")
+        assert calls == [("stop", {})]
 
-        saved = hs._adapter
-        try:
-            hs._adapter = mock_adapter
-            instance._handle_stop({"session_id": "abc"})
-        finally:
-            hs._adapter = saved
+    def test_non_utf8_and_bad_json_do_not_crash(self, server):
+        port, calls = server
+        assert self._post(port, "/hook/stop", b"\xff\xfe not json")[0] == 400
+        assert self._post(port, "/hook/stop", b"[1, 2]")[0] == 200  # non-dict payload -> {}
+        assert calls == [("stop", {})]
 
-        mock_adapter.stop.assert_called_once()
+    def test_unknown_platform_or_event_404(self, server):
+        port, _ = server
+        assert self._post(port, "/hook/pre?platform=nope")[0] == 404
+        assert self._post(port, "/hook/nope")[0] == 404
+        assert self._post(port, "/other")[0] == 404
 
-    def test_unknown_endpoint_returns_404(self):
-        import yicenet.daemon.hook_server as hs
-        from unittest.mock import MagicMock
+    def test_handler_error_is_500(self, server):
+        port, _ = server
+        code, out = self._post(port, "/hook/boom")
+        assert code == 500 and b"ZeroDivisionError" in out
 
-        handler = hs._HookHandler
-        instance = handler.__new__(handler)
-        instance._send = MagicMock()
-        instance.path = "/hook/unknown"
-        instance.headers = {}
-        instance.command = "POST"
 
-        instance.do_POST()
-        instance._send.assert_called_once_with(404, {"error": "not found"})
+class TestPlatforms:
 
-    def test_hook_adapter_singleton_uses_daemon_process_model(self):
-        from yicenet.daemon.hook_server import _hook_adapter
-        adapter = _hook_adapter()
+    def test_claude_pre_output_is_prefixed_json(self):
+        from yicenet.daemon import platforms as pf
+        fake = MagicMock()
+        fake.predict_for_turn_payload.return_value = {"yicenet": {"hexagram": "乾"}}
+        with patch("yicenet.tools.claude_hook.ClaudeCodeAdapter", return_value=fake), \
+             patch("yicenet.daemon.platforms._configure_memory"):
+            routes = pf._claude_routes()
+        out = routes["pre"]({"prompt": "x"})
+        assert out.startswith(b"[YiCeNet] ")
+        assert json.loads(out[len(b"[YiCeNet] "):]) == {"yicenet": {"hexagram": "乾"}}
+        assert routes["stop"]({}) == b""
+
+    def test_claude_adapter_is_daemon_process_model(self):
+        from yicenet.daemon import platforms as pf
+        with patch("yicenet.daemon.platforms._configure_memory"):
+            routes = pf._claude_routes()
+        adapter = routes["pre"].__closure__[0].cell_contents
         assert adapter.process_model == "daemon"
+
+    def test_kimi_routes_cover_all_cli_events(self):
+        from yicenet.daemon import platforms as pf
+        from yicenet.tools import kimi_code_hook as kimi
+        saved = kimi._adapter
+        try:
+            with patch("yicenet.daemon.platforms._configure_memory"):
+                routes = pf._kimi_routes()
+            assert set(routes) == set(kimi._COMMANDS)
+            assert kimi._adapter.process_model == "daemon"
+            with patch.object(kimi._adapter, "predict_for_turn_payload", return_value=None):
+                assert routes["pre_message_send"]({}) == b""
+                assert routes["pre_tool_use"]({"tool_name": "Shell"}) == b""  # sys.exit swallowed
+        finally:
+            kimi._adapter = saved
+
+    def test_unknown_route(self):
+        from yicenet.daemon import platforms as pf
+        with pytest.raises(pf.UnknownRoute):
+            pf.handler_for("nope", "pre")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ipc_hook — thin client
+# ipc_hook — Python twin of the native client
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestIpcHook:
 
-    def test_returns_false_when_daemon_unreachable(self):
-        from yicenet.tools.ipc_hook import pre_message_send_ipc
+    def test_forward_returns_none_when_daemon_unreachable(self):
+        from yicenet.tools.ipc_hook import forward
         with patch("yicenet.tools.ipc_hook._get_port", return_value=1), \
-             patch("yicenet.tools.ipc_hook._ensure_daemon", return_value=0):
-            result = pre_message_send_ipc({"prompt": "x"})
-        assert result is False
+             patch("yicenet.tools.ipc_hook._ensure_daemon", return_value=0) as ens:
+            assert forward("claude-code", "pre", b"{}") is None
+        ens.assert_called_once()
 
-    def test_stop_returns_false_when_daemon_unreachable(self):
-        from yicenet.tools.ipc_hook import stop_ipc
-        with patch("yicenet.tools.ipc_hook._get_port", return_value=1):
-            result = stop_ipc({"session_id": "abc"})
-        assert result is False
+    def test_forward_retries_on_spawned_port(self):
+        from yicenet.tools import ipc_hook
+        replies = iter([None, b"OUT"])
+        with patch.object(ipc_hook, "_post", side_effect=lambda *a, **k: next(replies)) as post, \
+             patch.object(ipc_hook, "_ensure_daemon", return_value=4242):
+            assert ipc_hook.forward("kimi-code", "stop", b"{}") == b"OUT"
+        assert post.call_args.kwargs["port"] == 4242
 
-    def test_pre_message_send_ipc_success_path(self):
-        """ipc_hook sends request and parses response from daemon."""
-        from yicenet.tools.ipc_hook import pre_message_send_ipc
-        from unittest.mock import patch
-        from io import BytesIO
+    def test_env_port_wins(self, monkeypatch):
+        from yicenet.tools.ipc_hook import _get_port
+        monkeypatch.setenv("YICENET_DAEMON_PORT", "5555")
+        assert _get_port() == 5555
 
-        fake_result = {"yicenet": {"label": "坤", "hexagram": "坤", "session_id": "x"}}
-        fake_stdout = BytesIO()
 
-        with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
-             patch("sys.stderr", StringIO()), \
-             patch("os.write", lambda fd, b: fake_stdout.write(b) if fd == 1 else None):
-            ok = pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
+# ─────────────────────────────────────────────────────────────────────────────
+# Native client (native/yicenet-hook) — only when a built binary is around
+# ─────────────────────────────────────────────────────────────────────────────
 
-        assert ok is True
-        output = json.loads(fake_stdout.getvalue())
-        assert output["yicenet"]["hexagram"] == "坤"
+def _built_hook_binary():
+    root = Path(__file__).resolve().parent.parent / "build" / "yicenet-hook"
+    for cand in (root / "Release" / "yicenet-hook.exe", root / "yicenet-hook.exe", root / "yicenet-hook"):
+        if cand.is_file():
+            return cand
+    return None
 
-    def test_ipc_label_written_to_stderr(self):
-        """Label from daemon response lands in the hook process stderr."""
-        from yicenet.tools.ipc_hook import pre_message_send_ipc
-        from unittest.mock import patch
-        from io import StringIO
 
-        fake_result = {"yicenet": {"label": "HEXLABEL", "hexagram": "乾", "session_id": "x"}}
-        fake_stderr = StringIO()
+@pytest.mark.skipif(_built_hook_binary() is None, reason="native client not built (scripts/build-hook.*)")
+class TestNativeClient:
 
-        with patch("yicenet.tools.ipc_hook._post", return_value=fake_result), \
-             patch("sys.stderr", fake_stderr), \
-             patch("os.write", lambda fd, b: None):
-            pre_message_send_ipc({"session_id": "aabbccddeeff", "prompt": "task"})
+    def _run(self, args, body, env_port, **env):
+        import os
+        import subprocess
+        e = dict(os.environ, YICENET_DAEMON_PORT=str(env_port), YICENET_DAEMON_PYTHON="", **env)
+        return subprocess.run([str(_built_hook_binary()), *args], input=body,
+                              capture_output=True, timeout=30, env=e)
 
-        assert "HEXLABEL" in fake_stderr.getvalue()
+    def test_forwards_bytes_both_ways(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        seen = {}
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["path"] = self.path
+                seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+                out = "[YiCeNet] 回显".encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            body = json.dumps({"prompt": "中文 payload"}, ensure_ascii=False).encode("utf-8")
+            r = self._run(["kimi-code", "pre_message_send"], body, srv.server_address[1])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        assert r.returncode == 0
+        assert r.stdout == "[YiCeNet] 回显".encode("utf-8")
+        assert seen == {"path": "/hook/pre_message_send?platform=kimi-code", "body": body}
+
+    def test_no_daemon_no_python_exits_0_silently(self):
+        r = self._run(["claude-code", "pre"], b"{}", 1, USERPROFILE="/nonexistent", HOME="/nonexistent")
+        assert r.returncode == 0
+        assert r.stdout == b""
+
+    def test_usage_exits_0(self):
+        r = self._run([], b"", 1)
+        assert r.returncode == 0 and b"usage" in r.stderr
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -35,3 +35,22 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest tests/ -v --tb=short
+
+  native-hook:
+    name: native hook client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S native/yicenet-hook -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+      - name: Smoke test (no daemon, no python -> silent exit 0)
+        shell: bash
+        run: |
+          BIN=build/yicenet-hook; [ -f build/Release/yicenet-hook.exe ] && BIN=build/Release/yicenet-hook.exe
+          OUT=$(echo "{}" | YICENET_DAEMON_PORT=1 YICENET_DAEMON_PYTHON= HOME=/nonexistent USERPROFILE=/nonexistent "$BIN" claude-code pre)
+          test -z "$OUT"

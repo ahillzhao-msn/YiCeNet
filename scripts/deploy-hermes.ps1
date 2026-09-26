@@ -5,14 +5,20 @@
 #   .\scripts\deploy-hermes.ps1 -SkipBuild    # re-install the newest wheel in dist\
 #   .\scripts\deploy-hermes.ps1 -Editable     # dev machine: pip install -e the source tree
 #   .\scripts\deploy-hermes.ps1 -ProjectDir C:\path\to\YiCeNet
+#   .\scripts\deploy-hermes.ps1 -SkipNativeHook  # keep the Python hook runner
+#
+# Native hook client (~/.yicenet/bin/yicenet-hook.exe): built from native\ when a C++ toolchain
+# is present, otherwise downloaded from the latest GitHub release.
 param(
     [string]$ProjectDir = (Split-Path $PSScriptRoot -Parent),
     [string]$HermesDir  = "$env:LOCALAPPDATA\hermes\hermes-agent",
     [switch]$SkipBuild,
-    [switch]$Editable
+    [switch]$Editable,
+    [switch]$SkipNativeHook
 )
 
 $ErrorActionPreference = "Stop"
+$ProjectDir = (Resolve-Path $ProjectDir).Path   # "~\..." is not expanded for native tools
 
 # Native tools (uv, python) write progress to stderr; Windows PowerShell 5.1 turns any native
 # stderr line into a terminating error under "Stop". Run them with "Continue" and judge by exit code.
@@ -46,13 +52,24 @@ if ($Editable) {
     Invoke-Native "uv pip install" { uv pip install --python $py --reinstall-package yicenet $whl.FullName }
 }
 
-# 3. Post-deploy: local tokenizer (no network), Claude Code hooks, daemon restart
+# 3. Native hook client: build locally if possible, else the release binary (in post-deploy)
+$needDownload = $false
+if (-not $SkipNativeHook) {
+    try { & "$PSScriptRoot\build-hook.ps1" -ProjectDir $ProjectDir }
+    catch { Write-Host "Native build unavailable ($_) -- will download the release binary"; $needDownload = $true }
+}
+
+# 4. Post-deploy: local tokenizer (no network), native client config, Claude Code hooks, daemon restart
 $post = @'
-import pathlib
+import pathlib, sys
 from yicenet import __version__
 from yicenet.tokenizer import install_tokenizer
 from yicenet.daemon.launcher import stop_daemon
+from yicenet.install import native
 install_tokenizer()
+if "--download-hook" in sys.argv and not native.hook_binary():
+    print("Native hook:", native.install_hook_binary() or "no release binary; Python hooks stay")
+native.write_daemon_python()                 # the native client spawns the daemon with this python
 if (pathlib.Path.home() / ".claude").exists():
     from yicenet.install.claude import ClaudeCodeInstaller
     ClaudeCodeInstaller().register_hooks()   # rewrites ~/.claude/hooks runner + settings.json hooks
@@ -64,4 +81,5 @@ print("Installed: yicenet", __version__)
 $postFile = Join-Path $env:TEMP "yicenet-post-deploy.py"
 Set-Content -Path $postFile -Value $post -Encoding utf8
 $env:PYTHONIOENCODING = "utf-8"
-try { Invoke-Native "post-deploy" { & $py $postFile } } finally { Remove-Item $postFile -ErrorAction SilentlyContinue }
+$postArgs = @(); if ($needDownload) { $postArgs += "--download-hook" }
+try { Invoke-Native "post-deploy" { & $py $postFile @postArgs } } finally { Remove-Item $postFile -ErrorAction SilentlyContinue }

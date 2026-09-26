@@ -18,49 +18,39 @@ if hasattr(sys.stderr, "reconfigure"):
 event = os.environ.get("YICENET_HOOK_EVENT") or (sys.argv[1] if len(sys.argv) > 1 else "pre")
 mode = os.environ.get("YICENET_MODE", "daemon")
 
-# Read stdin once and pass explicitly.
-_raw = ""
+# Read stdin once, as raw bytes.
+_body = b""
 try:
-    # Claude Code sends UTF-8; text-mode stdin on Windows uses the locale codepage and turns
-    # CJK prompts into mojibake with lone surrogates that the tokenizer rejects.
-    _raw = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
+    _body = sys.stdin.buffer.read()
 except Exception:
     pass
+
+# ── Daemon mode (default): forward to the daemon, auto-spawn ────────────────
+# Same protocol as the native yicenet-hook client; the daemon decides the stdout.
+
+if mode == "daemon":
+    from yicenet.tools.ipc_hook import forward
+
+    out = forward("claude-code", event, _body)
+    if event == "pre":
+        if out is None:
+            out = b"[YiCeNet daemon unavailable]"
+            sys.stderr.write("[YiCeNet] daemon unavailable\n")
+            sys.stderr.flush()
+        elif out.startswith(b"[YiCeNet] "):
+            out = out[len(b"[YiCeNet] "):]  # already primed above
+    if out:
+        os.write(1, out)
+    sys.exit(0)
+
+# Claude Code sends UTF-8; text-mode stdin on Windows uses the locale codepage and turns
+# CJK prompts into mojibake with lone surrogates that the tokenizer rejects.
 _payload: dict = {}
 try:
+    _raw = _body.decode("utf-8", errors="replace").strip()
     _payload = json.loads(_raw) if _raw else {}
 except Exception:
     pass
-
-# ── Daemon mode (default): IPC to independent daemon, auto-spawn ────────────
-
-if mode == "daemon":
-    from yicenet.tools.ipc_hook import pre_message_send_ipc, stop_ipc, post_tool_ipc
-
-    if event == "pre":
-        if not pre_message_send_ipc(_payload):
-            _degraded = {
-                "yicenet": {
-                    "session_id": "",
-                    "turn_id": 0,
-                    "label": "[YiCeNet daemon unavailable]",
-                    "hexagram": "",
-                    "action": "",
-                    "env_confidence": 0.0,
-                    "context_status": "thin",
-                    "prescription": {},
-                }
-            }
-            # Write directly to fd 1 as raw UTF-8 bytes
-            os.write(1, json.dumps(_degraded, ensure_ascii=False).encode("utf-8"))
-            sys.stderr.write("[YiCeNet] daemon unavailable\n")
-            sys.stderr.flush()
-    elif event == "post_tool":
-        post_tool_ipc(_payload)
-    elif event == "stop":
-        stop_ipc(_payload)
-
-    sys.exit(0)
 
 # ── Subprocess mode: cold-start engine in-process ───────────────────────────
 

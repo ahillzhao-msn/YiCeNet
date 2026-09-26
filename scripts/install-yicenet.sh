@@ -100,6 +100,15 @@ uv pip install --python "$VENV_PY" "$TMPDIR/$WHEEL_FILE"
 "$VENV_PY" -c "from yicenet import __version__; print(f'✓ YiCeNet v{__version__} installed')"
 "$VENV_PY" -c "from yicenet.tokenizer import install_tokenizer; install_tokenizer()"
 
+# Native hook client (~/.yicenet/bin/yicenet-hook): release binary, else build from source
+if ! "$VENV_PY" -c "
+import sys
+from yicenet.install import native
+native.write_daemon_python()
+sys.exit(0 if (native.hook_binary() or native.install_hook_binary()) else 1)"; then
+    bash "$(dirname "$0")/build-hook.sh" || echo "  · native hook unavailable — Python hooks will be used"
+fi
+
 # ── 5. Download checkpoints from release ──
 echo ""
 echo "── Downloading checkpoints ──"

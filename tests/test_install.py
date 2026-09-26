@@ -160,3 +160,43 @@ class TestHermesInstaller:
             assert plugin_dir.exists()
             installer.unregister()
             assert not plugin_dir.exists()
+
+
+class TestNativeHookInstall:
+
+    def _register(self, tmp_path):
+        import json
+        claude_dir = tmp_path / ".claude"
+        settings_file = claude_dir / "settings.json"
+        with patch("yicenet.install.claude._CLAUDE_DIR", claude_dir), \
+             patch("yicenet.install.claude._HOOKS_DIR", claude_dir / "hooks"), \
+             patch("yicenet.install.claude._SETTINGS", settings_file):
+            ClaudeCodeInstaller().register_hooks()
+        hooks = json.loads(settings_file.read_text())["hooks"]
+        return {ev: hooks[ev][0]["hooks"][0]["command"] for ev in hooks}
+
+    def test_uses_native_client_when_installed(self, tmp_path):
+        from yicenet.install import native
+        native.BIN_DIR.mkdir(parents=True)
+        (native.BIN_DIR / native._EXE).write_bytes(b"")
+        cmds = self._register(tmp_path)
+        assert cmds["UserPromptSubmit"] == f'"{native.BIN_DIR / native._EXE}" claude-code pre'
+        assert cmds["Stop"].endswith(" claude-code stop")
+        assert native.DAEMON_PYTHON_FILE.read_text().strip()
+
+    def test_falls_back_to_python_runner_and_switches_in_place(self, tmp_path):
+        from yicenet.install import native
+        assert "yicenet_claude_hook.py" in self._register(tmp_path)["UserPromptSubmit"]
+        native.BIN_DIR.mkdir(parents=True)
+        (native.BIN_DIR / native._EXE).write_bytes(b"")
+        cmds = self._register(tmp_path)  # re-register replaces, never duplicates
+        assert "yicenet-hook" in cmds["UserPromptSubmit"]
+
+    def test_release_asset_name(self):
+        from yicenet.install import native
+        with patch("platform.machine", return_value="AMD64"), patch.object(sys, "platform", "win32"):
+            assert native.release_asset_name() == "yicenet-hook-windows-x64.exe"
+        with patch("platform.machine", return_value="aarch64"), patch.object(sys, "platform", "linux"):
+            assert native.release_asset_name() == "yicenet-hook-linux-arm64"
+        with patch("platform.machine", return_value="x86_64"), patch.object(sys, "platform", "darwin"):
+            assert native.release_asset_name() is None

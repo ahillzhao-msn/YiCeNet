@@ -10,6 +10,10 @@ Registered hooks (settings.json):
   PostToolUse      → sniff_tool via daemon IPC [accumulate tool signals]
   Stop             → on_turn_complete via daemon IPC [store response for next turn]
 
+Hook command: the native client `yicenet-hook claude-code <event>` when it is
+installed (~/.yicenet/bin, see install.native), else the Python runner
+~/.claude/hooks/yicenet_claude_hook.py.  Both speak the same daemon protocol.
+
 The daemon is an independent background process managed by daemon.launcher.
 It is NOT owned by the MCP server. MCP provides direct tool access only.
 """
@@ -21,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import native
 from .base import PlatformInstaller
 
 _CLAUDE_DIR = Path.home() / ".claude"
@@ -54,8 +59,13 @@ class ClaudeCodeInstaller(PlatformInstaller):
             raise RuntimeError("No suitable Python found for Claude Code hooks")
 
         _HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-        hook_script = self._write_hook_script()
-        self._patch_hook_settings(python, hook_script)
+        hook_script = self._write_hook_script()  # kept as the fallback either way
+        native.write_daemon_python()
+        exe = native.hook_binary()
+        if exe is not None:
+            self._patch_hook_settings(lambda event: f'"{exe}" claude-code {event}')
+        else:
+            self._patch_hook_settings(lambda event: f'"{python}" "{hook_script}" {event}')
 
     # ── MCP mode: pure tool interface ─────────────────────────────────────────
 
@@ -137,17 +147,21 @@ class ClaudeCodeInstaller(PlatformInstaller):
             encoding="utf-8",
         )
 
-    def _patch_hook_settings(self, python: str, hook_script: Path) -> None:
+    @staticmethod
+    def _is_ours(command: str) -> bool:
+        return "yicenet_claude_hook" in command or native.is_native_command(command)
+
+    def _patch_hook_settings(self, command_for) -> None:
         settings = self._load_settings()
         hooks = settings.setdefault("hooks", {})
 
         def _ensure_hook(event: str, event_val: str) -> None:
-            cmd = f'"{python}" "{hook_script}" {event_val}'
+            cmd = command_for(event_val)
             entries = hooks.setdefault(event, [])
             new_entry = {"hooks": [{"type": "command", "command": cmd}]}
             for e in entries:
                 for h in e.get("hooks", []):
-                    if "yicenet_claude_hook" in h.get("command", ""):
+                    if self._is_ours(h.get("command", "")):
                         h["command"] = cmd
                         h.pop("env", None)
                         self._save_settings(settings)
@@ -176,7 +190,7 @@ class ClaudeCodeInstaller(PlatformInstaller):
                 hooks[event] = [
                     e for e in hooks[event]
                     if not any(
-                        "yicenet_claude_hook" in h.get("command", "")
+                        self._is_ours(h.get("command", ""))
                         for h in e.get("hooks", [])
                     )
                 ]

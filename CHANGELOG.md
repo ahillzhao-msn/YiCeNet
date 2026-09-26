@@ -2,6 +2,32 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Native hook client** (`native/yicenet-hook`, C++17, Windows/Linux/macOS).
+  - One binary serves every CLI: `yicenet-hook <platform> <event>`.
+  - It forwards the raw payload to the daemon and prints the reply verbatim.
+  - It spawns the daemon when needed and never blocks the agent.
+  - Warm `pre` takes ~27 ms end to end, versus ~250 ms for the Python runner.
+  - Release builds attach `yicenet-hook-<os>-<arch>` binaries.
+  - `yicenet-bootstrap`, `deploy-hermes.ps1` and `install-yicenet.sh` install it to `~/.yicenet/bin`.
+  - The Claude Code installer registers it when it is present.
+- **Platform routing in the daemon** (`daemon/platforms.py`).
+  - `POST /hook/<event>?platform=<id>` now covers `claude-code` and `kimi-code`.
+  - Handlers return the exact hook stdout.
+
+### Changed
+
+- `ipc_hook` is now a byte-level `forward(platform, event, body)`, the Python twin of the native client.
+  - The Claude runner and the Kimi dispatcher both use it, so Kimi Code goes through the warm daemon too.
+- Daemon changes:
+  - Threaded server: `/health` stays responsive, while hooks remain serialized.
+  - Concurrent spawns now converge on one daemon.
+  - The daemon opts out of Windows EcoQoS power throttling, which had roughly doubled model latency.
+- `KimiCodeAdapter` takes `process_model` (`subprocess` or `daemon`).
+
 ## [16.0.0] — 2026-06-17
 
 Major release: real feedback signal pipeline, platform-independent hook architecture,

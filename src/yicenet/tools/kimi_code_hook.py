@@ -4,7 +4,7 @@ YiCeNet Kimi Code hook adapter.
 KimiCodeAdapter implements only what is specific to Kimi Code CLI:
   - session_id: derived from Kimi Code's session_id or cwd+date hash
   - assistant_response: read from payload if Kimi Code provides it
-  - process_model: "subprocess" (Kimi Code spawns a fresh process per hook)
+  - process_model: "subprocess" (python hook script) or "daemon" (native yicenet-hook client)
 
 All shared prediction and hook lifecycle logic lives in HooksAdapter.
 
@@ -39,13 +39,16 @@ class KimiCodeAdapter(HooksAdapter):
 
     _platform_id = "kimi-code"
 
+    def __init__(self, process_model: str = "subprocess") -> None:
+        self._process_model = process_model
+
     @property
     def platform_id(self) -> str:
         return self._platform_id
 
     @property
     def process_model(self) -> str:
-        return "subprocess"
+        return self._process_model
 
     def session_id(self, payload: dict) -> str:
         """Derive a stable session id from Kimi Code payload."""

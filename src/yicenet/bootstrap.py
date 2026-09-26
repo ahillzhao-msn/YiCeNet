@@ -465,6 +465,19 @@ def bootstrap(
         print(f"  ⚠ {e}\n  (the bundled tokenizer is used directly at first use)")
     print()
 
+    print("── Phase 4c: Native hook client ──")
+    try:
+        from yicenet.install import native
+        exe = native.hook_binary() or native.install_hook_binary()
+        if exe:
+            print(f"  ✓ {exe}")
+        else:
+            print("  · no prebuilt binary for this platform — Python hooks will be used "
+                  "(build one with scripts/build-hook.sh / build-hook.ps1)")
+    except Exception as e:
+        print(f"  ⚠ {e}")
+    print()
+
     print("── Phase 5: Data Root ──")
     init_data_root(soul_path=soul)
     env_path = PROJECT / ".env"
