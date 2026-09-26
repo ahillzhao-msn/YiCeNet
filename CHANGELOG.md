@@ -23,6 +23,12 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
 
 ### Fixed
 
+- Claude Code replies are now taken from the Stop payload (`last_assistant_message`).
+  - The transcript could still lack the current reply at Stop time, so every response was recorded one turn late.
+  - Because of that, the flywheel never received a trajectory from Claude Code.
+- Claude Code tool signals are derived from `tool_response`, since the payload has no exit code or size:
+  - Failure: `is_error` / `error` / `interrupted` / non-zero `returnCode`.
+  - Size: the serialized response.
 - `MemoryBank.get_turn()` was missing. `on_turn_complete` would have raised on every turn after the first, which went unnoticed because turns were never counted.
 - `SessionBuffer.get_metadata()` is now row-aligned with `get_keys()` when some turns carry no vector.
 

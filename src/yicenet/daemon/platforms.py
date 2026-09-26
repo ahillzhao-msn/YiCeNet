@@ -40,6 +40,26 @@ def _configure_memory(adapter) -> None:
 # ── Claude Code ──────────────────────────────────────────────────────────────
 
 
+def _claude_tool_outcome(response) -> "tuple[int, int]":
+    """(exit_code, result size in bytes) from a PostToolUse tool_response.
+
+    Claude Code reports no exit code: a tool failed when its response says
+    so (is_error / error / interrupted / non-zero returnCode)."""
+    if response is None:
+        return 0, 0
+    try:
+        size = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        size = len(str(response).encode("utf-8"))
+    failed = False
+    if isinstance(response, dict):
+        failed = bool(response.get("is_error") or response.get("error")
+                      or response.get("interrupted")
+                      or response.get("returnCode") not in (None, 0))
+    return (1 if failed else 0), size
+
+
+
 def _claude_routes() -> Dict[str, Handler]:
     from yicenet.tools.claude_hook import ClaudeCodeAdapter
 
@@ -53,11 +73,12 @@ def _claude_routes() -> Dict[str, Handler]:
 
     def post_tool(payload: dict) -> bytes:
         if adapter.ctx is not None:
+            exit_code, size = _claude_tool_outcome(payload.get("tool_response"))
             adapter.ctx.sniff_tool(
                 name=payload.get("tool_name", ""),
-                exit_code=payload.get("exit_code", 0),
+                exit_code=payload.get("exit_code", exit_code),
                 duration_ms=payload.get("duration_ms", 0),
-                result_size_bytes=payload.get("result_size", 0),
+                result_size_bytes=payload.get("result_size", size),
             )
         return b""
 

@@ -978,3 +978,26 @@ def test_read_stdin_utf8_keeps_cjk_from_a_byte_pipe():
     fake = io.TextIOWrapper(io.BytesIO(payload.encode("utf-8")), encoding="cp1252", errors="surrogateescape")
     with patch("sys.stdin", fake):
         assert json.loads(read_stdin_utf8())["prompt"] == "易策中文提示词"
+
+
+class TestClaudeRealPayloads:
+    """Field shapes taken from Claude Code 2.1 hook payloads."""
+
+    def test_stop_reply_comes_from_payload_not_transcript(self):
+        from yicenet.tools.claude_hook import ClaudeCodeAdapter
+        with patch("yicenet.tools.claude_hook._read_last_assistant", return_value="stale"):
+            reply = ClaudeCodeAdapter().assistant_response(
+                {"hook_event_name": "Stop", "last_assistant_message": "完成"})
+            assert reply == "完成"
+            assert ClaudeCodeAdapter().assistant_response({}) == "stale"
+
+    def test_tool_outcome_from_tool_response(self):
+        from yicenet.daemon.platforms import _claude_tool_outcome
+        ok = {"stdout": "hi", "stderr": "", "interrupted": False, "isImage": False}
+        code, size = _claude_tool_outcome(ok)
+        assert code == 0 and size > 0
+        assert _claude_tool_outcome({"stdout": "", "interrupted": True})[0] == 1
+        assert _claude_tool_outcome({"is_error": True})[0] == 1
+        assert _claude_tool_outcome({"returnCode": 2})[0] == 1
+        assert _claude_tool_outcome("plain text result") == (0, len("plain text result") + 2)
+        assert _claude_tool_outcome(None) == (0, 0)

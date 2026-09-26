@@ -71,7 +71,12 @@ class ClaudeCodeAdapter(HooksAdapter):
         return hashlib.sha256(f"{cwd}{date}".encode()).hexdigest()[:12]
 
     def assistant_response(self, payload: dict) -> str:
-        """Read last assistant message from the Claude Code transcript file."""
+        """This turn's reply. The Stop payload carries it (last_assistant_message);
+        the transcript is only a fallback — at Stop time it can still lack the
+        current reply, which shifted every response one turn late."""
+        msg = payload.get("last_assistant_message")
+        if isinstance(msg, str) and msg:
+            return msg
         return _read_last_assistant(payload)
 
 
