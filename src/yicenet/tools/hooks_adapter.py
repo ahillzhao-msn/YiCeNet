@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import functools
 import json
+import re
 import sys
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -37,6 +38,9 @@ def read_stdin_utf8() -> str:
     buf = getattr(sys.stdin, "buffer", None)
     raw = buf.read().decode("utf-8", errors="replace") if buf is not None else sys.stdin.read()
     return raw.strip()
+
+_SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
+
 
 class HooksAdapter(ABC):
     """Shared base for all hook-lifecycle platform adapters.
@@ -88,8 +92,8 @@ class HooksAdapter(ABC):
         """'subprocess' | 'daemon' — controls MemoryBank flush behaviour."""
 
     @abstractmethod
-    def session_id(self, payload: dict) -> str:
-        """Derive a stable, short session identifier from the hook payload."""
+    def platform_session_id(self, payload: dict) -> str:
+        """The platform's own session identifier for this payload ("" if none)."""
 
     @abstractmethod
     def assistant_response(self, payload: dict) -> str:
@@ -97,13 +101,45 @@ class HooksAdapter(ABC):
 
     # ── Concrete defaults: subclasses may override ────────────────────────────
 
+    def session_id(self, payload: dict) -> str:
+        """YiCeNet's session key: "<platform_id>.<platform session id>".
+
+        Unique across platforms sharing one daemon, stable across daemon
+        restarts, and safe as a file name (the MemoryBank file is <key>.jsonl).
+        Under an external session manager (LOOM) the caller's id is used as is.
+        """
+        raw = self.platform_session_id(payload)
+        if not raw:
+            return ""
+        from yicenet.memory_bank import external_session_manager
+        if external_session_manager():
+            return str(raw)
+        return f"{self.platform_id}.{_SAFE_ID.sub('_', str(raw))[:128]}"
+
     def turn_id(self, payload: dict) -> int:
         """Monotonically increasing turn counter (0-indexed).
 
-        Default: derives from message list length.  Override when the platform
-        supplies a direct turn_id field or uses a different history key.
+        An explicit payload turn_id wins, then the platform's message history;
+        otherwise YiCeNet counts turns itself from the session's persisted
+        memory (Claude Code / Kimi payloads carry no history).
         """
-        return max(0, len(payload.get("messages", [])) - 1)
+        tid = payload.get("turn_id")
+        if tid is not None:
+            return int(tid)
+        history = payload.get("conversation_history") or payload.get("messages")
+        if history:
+            return max(0, len(history) - 1)
+        return self._next_turn_from_memory(self.session_id(payload))
+
+    @staticmethod
+    def _next_turn_from_memory(session_id: str) -> int:
+        if not session_id:
+            return 0
+        from yicenet.memory_bank import get_memory_bank
+        bank = get_memory_bank()
+        bank.init_session(session_id)  # restores from disk after a daemon restart
+        last = bank.get_last_turn(session_id)
+        return last.turn_id + 1 if last is not None else 0
 
     def prompt(self, payload: dict) -> str:
         """Current user message text (available at turn-start hooks)."""
@@ -130,6 +166,10 @@ class HooksAdapter(ABC):
           pre_message_send() prints the result to stdout (subprocess injection).
           daemon hook_server.py returns the result over HTTP (IPC delivery).
         """
+        # Pin the turn number once: counting from memory would move on as soon
+        # as this turn is stored.
+        payload = dict(payload or {})
+        payload.setdefault("turn_id", self.turn_id(payload))
         self.new_turn(payload)
         session_id = self.session_id(payload)
         turn_id = self.turn_id(payload)

@@ -2,6 +2,30 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Session memory is on by default, daemon included.**
+  - Sessions are keyed `<platform>.<platform session id>`, so they are unique across the platforms one daemon serves.
+  - YiCeNet counts turns itself from the persisted memory, because Claude Code and Kimi payloads carry no history. Before this, every Claude Code turn was turn 0.
+  - Sessions and turn counting survive daemon restarts; encoder vectors are stored by default.
+- **Retention policy**, a global `memory:` config (defaults in `memory_bank.MEMORY_DEFAULTS`):
+  - Sessions idle for longer than `session_ttl_hours` (48) are deleted.
+  - Live sessions are compacted and trimmed to the newest `max_turns` (200).
+  - The policy runs at startup and hourly in the daemon.
+  - Sessions are working memory; the flywheel's trajectory buffer is what persists.
+- `memory.session_manager: external` is for running with LOOM, which has its own session manager.
+  - YiCeNet then persists nothing and runs no retention.
+  - It uses session ids as the caller gives them.
+  - It replaces the per-platform `persist_daemon_sessions` setting.
+- Adapters implement `platform_session_id()`; `HooksAdapter.session_id()` applies the namespace.
+
+### Fixed
+
+- `MemoryBank.get_turn()` was missing. `on_turn_complete` would have raised on every turn after the first, which went unnoticed because turns were never counted.
+- `SessionBuffer.get_metadata()` is now row-aligned with `get_keys()` when some turns carry no vector.
+
 ## [18.1.0] — 2026-09-25
 
 ### Added

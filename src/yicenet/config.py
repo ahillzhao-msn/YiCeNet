@@ -135,6 +135,15 @@ soul:
   inject_targets: ["hermes", "claude-code"]
   injection_level: "summary"  # "none" | "summary" | "full"
 
+# ── Session memory (global: one daemon serves every platform) ──
+# Sessions are keyed "<platform>.<platform session id>" and are short-lived
+# working memory; the flywheel's trajectory buffer is what persists.
+memory:
+  session_manager: yicenet    # yicenet | external (LOOM owns sessions: nothing persisted here)
+  store_vectors: true         # keep encoder vectors so attention survives restarts
+  session_ttl_hours: 48.0     # retention: delete sessions idle longer than this
+  max_turns: 200              # retention: keep only the newest N turns per session
+
 # ── Per-platform overrides ────────────────────────────────────────────────────
 # Settings under platforms.<id> are deep-merged on top of the globals above.
 # Use platform_id values: "hermes", "claude-code", "claude-code-mcp".
@@ -144,10 +153,6 @@ platforms:
     display:
       hexagram_chain: true   # 长会话显示卦链演进
       mode: compact
-    memory:
-      persist_daemon_sessions: true
-      store_vectors: false
-      session_ttl_hours: 48.0
 
   claude-code:
     display:
@@ -155,8 +160,6 @@ platforms:
       mode: compact
     daemon:
       port: 7788             # Daemon HTTP server port
-    memory:
-      persist_daemon_sessions: false
 """
 
 _USER_CONFIG_CACHE: Optional[dict] = None

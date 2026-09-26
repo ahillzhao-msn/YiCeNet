@@ -37,15 +37,8 @@ class HermesAdapter(HooksAdapter):
     def process_model(self) -> str:
         return "daemon"
 
-    def session_id(self, payload: dict) -> str:
+    def platform_session_id(self, payload: dict) -> str:
         return payload.get("session_id", "")
-
-    def turn_id(self, payload: dict) -> int:
-        tid = payload.get("turn_id")
-        if tid is not None:
-            return int(tid)
-        history = payload.get("conversation_history") or payload.get("messages") or []
-        return max(0, len(history) - 1)
 
     def prompt(self, payload: dict) -> str:
         messages = payload.get("messages") or [{}]

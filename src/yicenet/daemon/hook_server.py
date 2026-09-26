@@ -107,10 +107,27 @@ class _HookHandler(BaseHTTPRequestHandler):
 # ── Idle watchdog ────────────────────────────────────────────────────────────
 
 
+RETENTION_INTERVAL_S = 3600
+
+
+def _apply_retention() -> None:
+    """Run the session-memory retention policy (serialized with hooks)."""
+    try:
+        from yicenet.memory_bank import get_memory_bank, memory_config
+        with _hook_lock:
+            get_memory_bank().enforce_retention(float(memory_config()["session_ttl_hours"]))
+    except Exception as exc:
+        sys.stderr.write(f"[YiCeNet daemon] retention failed: {exc}\n")
+
+
 def _idle_watchdog(timeout_s: int) -> None:
-    """Background thread: exit the process after idle timeout."""
+    """Background thread: exit the process after idle timeout; hourly retention."""
+    last_retention = time.monotonic()
     while True:
         time.sleep(60)
+        if time.monotonic() - last_retention >= RETENTION_INTERVAL_S:
+            last_retention = time.monotonic()
+            _apply_retention()
         with _request_lock:
             idle = time.monotonic() - _last_request_time
         if idle >= timeout_s:

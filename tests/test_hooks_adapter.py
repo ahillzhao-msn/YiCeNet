@@ -46,7 +46,7 @@ class TestHooksAdapterABC:
         class Incomplete(HooksAdapter):
             @property
             def process_model(self): return "subprocess"
-            def session_id(self, p): return ""
+            def platform_session_id(self, p): return ""
             def assistant_response(self, p): return ""
 
         with pytest.raises(TypeError):
@@ -58,13 +58,13 @@ class TestHooksAdapterABC:
         class Incomplete(HooksAdapter):
             @property
             def platform_id(self): return "x"
-            def session_id(self, p): return ""
+            def platform_session_id(self, p): return ""
             def assistant_response(self, p): return ""
 
         with pytest.raises(TypeError):
             Incomplete()
 
-    def test_concrete_subclass_must_implement_session_id(self):
+    def test_concrete_subclass_must_implement_platform_session_id(self):
         from yicenet.tools.hooks_adapter import HooksAdapter
 
         class Incomplete(HooksAdapter):
@@ -85,7 +85,7 @@ class TestHooksAdapterABC:
             def platform_id(self): return "x"
             @property
             def process_model(self): return "subprocess"
-            def session_id(self, p): return ""
+            def platform_session_id(self, p): return ""
 
         with pytest.raises(TypeError):
             Incomplete()
@@ -98,7 +98,7 @@ class TestHooksAdapterABC:
             def platform_id(self): return "test"
             @property
             def process_model(self): return "subprocess"
-            def session_id(self, p): return "sid"
+            def platform_session_id(self, p): return "sid"
             def assistant_response(self, p): return ""
 
         adapter = Minimal()
@@ -117,7 +117,7 @@ class TestHooksAdapterDefaults:
             def platform_id(self): return "test"
             @property
             def process_model(self): return "subprocess"
-            def session_id(self, p): return "sid"
+            def platform_session_id(self, p): return "sid"
             def assistant_response(self, p): return ""
 
         return Concrete()
@@ -131,6 +131,21 @@ class TestHooksAdapterDefaults:
 
     def test_default_turn_id_empty(self, adapter):
         assert adapter.turn_id({}) == 0
+
+    def test_turn_id_counts_from_session_memory(self, adapter):
+        """No history in the payload (Claude Code, Kimi): YiCeNet counts turns itself."""
+        import numpy as np
+        from yicenet.memory_bank import MemoryBank
+        bank = MemoryBank()
+        with patch("yicenet.memory_bank.get_memory_bank", return_value=bank):
+            payload = {"session_id": "s1"}
+            assert adapter.turn_id(payload) == 0
+            sid = adapter.session_id(payload)
+            bank.store_turn(sid, 0, np.ones(4, dtype=np.float32), 1)
+            assert adapter.turn_id(payload) == 1
+            bank.store_turn(sid, 1, np.ones(4, dtype=np.float32), 2)
+            assert adapter.turn_id(payload) == 2
+            assert adapter.turn_id({"session_id": "s1", "turn_id": 7}) == 7
 
     def test_default_prompt(self, adapter):
         assert adapter.prompt({"prompt": "hello"}) == "hello"
@@ -176,27 +191,37 @@ class TestClaudeCodeAdapter:
         from yicenet.tools.claude_hook import ClaudeCodeAdapter
         assert ClaudeCodeAdapter().platform_id == "claude-code"
 
-    def test_session_id_from_uuid(self):
+    def test_session_id_is_platform_namespaced_full_id(self):
         from yicenet.tools.claude_hook import ClaudeCodeAdapter
-        adapter = ClaudeCodeAdapter()
-        payload = {"session_id": "abcd-1234-ef56-7890"}
-        sid = adapter.session_id(payload)
-        assert sid == "abcd12345678"[:12] or len(sid) == 12
+        sid = ClaudeCodeAdapter().session_id({"session_id": "a51ffae7-c48e-4b4e-9df7-93692c97ed01"})
+        assert sid == "claude-code.a51ffae7-c48e-4b4e-9df7-93692c97ed01"
 
-    def test_session_id_from_uuid_strips_hyphens(self):
+    def test_session_id_is_file_name_safe(self):
         from yicenet.tools.claude_hook import ClaudeCodeAdapter
-        payload = {"session_id": "aabb-ccdd-eeff-0011"}
-        sid = ClaudeCodeAdapter().session_id(payload)
-        assert "-" not in sid
-        assert len(sid) == 12
+        sid = ClaudeCodeAdapter().session_id({"session_id": "../x y/z"})
+        assert sid == "claude-code..._x_y_z"
+        assert "/" not in sid and " " not in sid
 
     def test_session_id_fallback_cwd_hash(self, tmp_path):
         from yicenet.tools.claude_hook import ClaudeCodeAdapter
         adapter = ClaudeCodeAdapter()
         with patch("os.getcwd", return_value=str(tmp_path)):
             sid = adapter.session_id({})
-        assert len(sid) == 12
-        assert sid.isalnum() or all(c in "0123456789abcdef" for c in sid)
+        platform, raw = sid.split(".", 1)
+        assert platform == "claude-code"
+        assert len(raw) == 12 and all(c in "0123456789abcdef" for c in raw)
+
+    def test_same_id_on_two_platforms_is_two_sessions(self):
+        from yicenet.tools.claude_hook import ClaudeCodeAdapter
+        from yicenet.tools.kimi_code_hook import KimiCodeAdapter
+        payload = {"session_id": "shared-id"}
+        assert ClaudeCodeAdapter().session_id(payload) != KimiCodeAdapter().session_id(payload)
+
+    def test_external_session_manager_uses_id_verbatim(self):
+        from yicenet.tools.claude_hook import ClaudeCodeAdapter
+        with patch("yicenet.memory_bank.memory_config",
+                   return_value={"session_manager": "external"}):
+            assert ClaudeCodeAdapter().session_id({"session_id": "loom-42"}) == "loom-42"
 
     def test_session_id_deterministic_same_day(self, tmp_path):
         from yicenet.tools.claude_hook import ClaudeCodeAdapter
@@ -270,7 +295,7 @@ class TestHermesAdapter:
     def test_session_id_from_payload(self):
         from yicenet.tools.hermes_hook import HermesAdapter
         adapter = HermesAdapter()
-        assert adapter.session_id({"session_id": "abc123"}) == "abc123"
+        assert adapter.session_id({"session_id": "abc123"}) == "hermes.abc123"
 
     def test_turn_id_from_direct_field(self):
         from yicenet.tools.hermes_hook import HermesAdapter

@@ -62,10 +62,10 @@ class ClaudeCodeAdapter(HooksAdapter):
     def process_model(self) -> str:
         return self._process_model
 
-    def session_id(self, payload: dict) -> str:
+    def platform_session_id(self, payload: dict) -> str:
         cc_id = payload.get("session_id", "")
         if cc_id:
-            return cc_id.replace("-", "")[:12]
+            return cc_id
         cwd = payload.get("cwd", os.getcwd())
         date = datetime.datetime.now().strftime("%Y%m%d")
         return hashlib.sha256(f"{cwd}{date}".encode()).hexdigest()[:12]

@@ -50,30 +50,14 @@ class KimiCodeAdapter(HooksAdapter):
     def process_model(self) -> str:
         return self._process_model
 
-    def session_id(self, payload: dict) -> str:
-        """Derive a stable session id from Kimi Code payload."""
+    def platform_session_id(self, payload: dict) -> str:
+        """Kimi Code's session id, or a cwd+date hash when it sends none."""
         sid = payload.get("session_id", "")
         if sid:
-            return sid.replace("-", "")[:12]
+            return sid
         cwd = payload.get("cwd", os.getcwd())
         date = datetime.datetime.now().strftime("%Y%m%d")
         return hashlib.sha256(f"{cwd}{date}".encode()).hexdigest()[:12]
-
-    def turn_id(self, payload: dict) -> int:
-        """Monotonically increasing turn counter (0-indexed).
-
-        Kimi Code does not expose a direct turn_id. We derive it from the
-        messages list when available; otherwise we fall back to 0.
-        """
-        tid = payload.get("turn_id")
-        if tid is not None:
-            return int(tid)
-        history = (
-            payload.get("messages")
-            or payload.get("conversation_history")
-            or []
-        )
-        return max(0, len(history) - 1)
 
     def prompt(self, payload: dict) -> str:
         """Current user message text (available at UserPromptSubmit)."""

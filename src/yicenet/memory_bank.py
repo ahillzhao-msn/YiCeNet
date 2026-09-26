@@ -63,9 +63,10 @@ class SessionBuffer:
         return np.stack(valid)
 
     def get_metadata(self) -> list[dict]:
+        # Row-aligned with get_keys(): only turns that carry a vector.
         return [
             {"turn_id": t.turn_id, "hexagram_id": t.hexagram_id, "summary": t.summary}
-            for t in self.turns
+            for t in self.turns if t.encoder_output.size > 0
         ]
 
     def size_bytes(self) -> int:
@@ -187,8 +188,9 @@ class FileBackend:
             ))
         return records
 
-    def compact(self, session_id: str) -> None:
-        """Rewrite the session file with patches merged into base records.
+    def compact(self, session_id: str, max_turns: int = 0) -> None:
+        """Rewrite the session file with patches merged into base records,
+        keeping only the newest max_turns turns when max_turns > 0.
 
         Removes accumulated patch lines so load() stays O(n) even for
         long-lived daemon sessions.  Called from cleanup_stale().
@@ -196,6 +198,8 @@ class FileBackend:
         records = self.load(session_id)
         if not records:
             return
+        if max_turns > 0:
+            records = records[-max_turns:]
         path = self._path(session_id)
         lines: list[str] = []
         for r in records:
@@ -226,12 +230,13 @@ class FileBackend:
         except Exception:
             return []
 
-    def cleanup_stale(self, max_age_hours: float = 48.0) -> int:
-        """Delete session files older than max_age_hours; compact the rest.
+    def cleanup_stale(self, max_age_hours: float = 48.0, max_turns: int = 0) -> int:
+        """Retention policy: delete sessions idle longer than max_age_hours,
+        compact the rest (fold WAL patches, keep only the newest max_turns
+        turns when max_turns > 0).  Returns the number of sessions deleted.
 
-        Called once at process startup.  Sessions older than the TTL are
-        definitively closed (no hook will reload them).  Younger sessions
-        get compact() so accumulated WAL patch lines don't bloat load().
+        Sessions are short-lived working memory; what outlives them is the
+        flywheel's trajectory buffer, which this never touches.
         """
         import time
         cutoff = time.time() - max_age_hours * 3600
@@ -243,7 +248,7 @@ class FileBackend:
                         p.unlink()
                         deleted += 1
                     else:
-                        self.compact(p.stem)  # fold WAL patches into base records
+                        self.compact(p.stem, max_turns=max_turns)
                 except OSError:
                     pass
         except Exception:
@@ -271,6 +276,7 @@ class MemoryBank:
         backend: Optional[PersistenceBackend] = None,
     ) -> None:
         self._sessions: dict[str, SessionBuffer] = {}
+        self._last_access: dict[str, float] = {}
         self._max_turns = max_turns_per_session
         self._backend = backend
 
@@ -282,6 +288,8 @@ class MemoryBank:
         When a backend is configured and the session is not yet in memory,
         loads prior turns from the backend file (cross-process restore).
         """
+        import time
+        self._last_access[session_id] = time.time()
         if session_id in self._sessions:
             return
         buf = SessionBuffer(session_id=session_id)
@@ -369,6 +377,15 @@ class MemoryBank:
             return np.empty((0, 0), dtype=np.float32), []
         return buf.get_keys(), buf.get_metadata()
 
+    def get_turn(self, session_id: str, turn_id: int) -> Optional[TurnRecord]:
+        """Return the stored TurnRecord with this turn_id, or None."""
+        buf = self._sessions.get(session_id)
+        if buf:
+            for r in reversed(buf.turns):
+                if r.turn_id == turn_id:
+                    return r
+        return None
+
     def get_turn_count(self, session_id: str) -> int:
         buf = self._sessions.get(session_id)
         return len(buf.turns) if buf else 0
@@ -378,6 +395,23 @@ class MemoryBank:
         if buf is None:
             return []
         return [t.hexagram_id for t in buf.turns if t.hexagram_id >= 0]
+
+    def enforce_retention(self, max_age_hours: float) -> int:
+        """Apply the retention policy on disk and in memory.
+
+        Long-lived daemons call this periodically: sessions idle longer than
+        max_age_hours are dropped from memory and deleted from disk; the rest
+        are compacted and trimmed to max_turns.  Returns sessions evicted.
+        """
+        import time
+        cutoff = time.time() - max_age_hours * 3600
+        idle = [sid for sid, t in self._last_access.items() if t < cutoff]
+        for sid in idle:
+            self._sessions.pop(sid, None)
+            self._last_access.pop(sid, None)
+        if self._backend is not None and hasattr(self._backend, "cleanup_stale"):
+            self._backend.cleanup_stale(max_age_hours=max_age_hours, max_turns=self._max_turns)
+        return len(idle)
 
     def get_active_sessions(self) -> list[str]:
         return list(self._sessions.keys())
@@ -396,39 +430,59 @@ class MemoryBank:
 _default_bank: Optional[MemoryBank] = None
 
 
+MEMORY_DEFAULTS = {
+    # Who owns session lifecycle:
+    #   "yicenet"  — YiCeNet keys sessions "<platform>.<id>", counts turns, persists
+    #                them and applies the retention policy below (standalone use).
+    #   "external" — another session manager (LOOM) owns sessions: YiCeNet persists
+    #                nothing, runs no retention and takes session ids as given.
+    "session_manager": "yicenet",
+    "store_vectors": True,      # keep encoder vectors: attention survives a daemon restart
+    "session_ttl_hours": 48.0,  # retention: sessions idle longer are deleted
+    "max_turns": 200,           # retention: newest turns kept per session
+}
+
+
+def memory_config() -> dict:
+    """Global `memory:` section of ~/.yicenet/config.yaml over MEMORY_DEFAULTS.
+
+    Global, not per platform: one daemon serves every platform with one bank.
+    """
+    try:
+        from yicenet.config import load_user_config
+        user = load_user_config().get("memory") or {}
+    except Exception:
+        user = {}
+    return {**MEMORY_DEFAULTS, **user}
+
+
+def external_session_manager() -> bool:
+    """True when an external session manager (LOOM) owns sessions."""
+    return memory_config().get("session_manager") == "external"
+
+
 def configure_memory_bank_for(adapter) -> None:
     """Configure the global MemoryBank singleton for the given platform adapter.
 
     Must be called once at process startup, before any code imports
     get_memory_bank().  Idempotent: subsequent calls are no-ops.
 
-    The adapter's process_model property ('subprocess' | 'daemon') determines
-    whether a FileBackend is attached:
-      - 'subprocess': FileBackend always attached (CC hooks need cross-process state)
-      - 'daemon':     FileBackend attached only when persist_daemon_sessions=True
+    With YiCeNet as session manager (default), sessions are persisted and pruned
+    by the retention policy.  With an external one, the bank is in-process only
+    (the attention history for the sessions the caller names) — nothing on disk.
     """
     global _default_bank
     if _default_bank is not None:
         return
 
-    try:
-        from yicenet.config import get_platform_config
-        cfg = get_platform_config(getattr(adapter, "platform_id", ""))
-    except Exception:
-        cfg = {}
-
-    mem = cfg.get("memory", {})
-    need_backend = adapter.process_model == "subprocess" or bool(
-        mem.get("persist_daemon_sessions", False)
-    )
-    store_vectors = bool(mem.get("store_vectors", False))
-    max_age_h = float(mem.get("session_ttl_hours", 48.0))
-    if need_backend:
-        backend: Optional[PersistenceBackend] = FileBackend(store_vectors=store_vectors)
-        backend.cleanup_stale(max_age_hours=max_age_h)
+    mem = memory_config()
+    max_turns = int(mem["max_turns"])
+    if mem.get("session_manager") == "external":
+        backend: Optional[PersistenceBackend] = None
     else:
-        backend = None
-    _default_bank = MemoryBank(backend=backend)
+        backend = FileBackend(store_vectors=bool(mem["store_vectors"]))
+        backend.cleanup_stale(max_age_hours=float(mem["session_ttl_hours"]), max_turns=max_turns)
+    _default_bank = MemoryBank(max_turns_per_session=max_turns, backend=backend)
 
 
 def get_memory_bank() -> MemoryBank:
