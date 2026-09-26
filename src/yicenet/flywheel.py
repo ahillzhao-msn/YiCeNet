@@ -16,6 +16,7 @@ DataSources registered by default_sources():
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -92,6 +93,49 @@ def _rotate_buffer(buffer_path: Path) -> None:
     print(f"    Buffer rotated: {len(lines) - KEEP_RECENT} records → {archive_path.name}, {KEEP_RECENT} kept")
 
 
+# Text that is not the customer's question: session-id placeholders from older
+# producers, and messages the platform injects into the user turn.
+#   "[claude-code] a51ffae7c48e", "[loom-hooks] sid=20260811_135" — but not "[WIP] 继续".
+_PLACEHOLDER = re.compile(r"^\[[a-z][a-z0-9_-]*\] (?=[\w:=.-]*\d)[\w:=.-]+$", re.ASCII)
+# Whole-message notices: nothing of the customer's in them.
+_NOTICE_PREFIXES = (
+    "[IMPORTANT:", "[SYSTEM",                                # Hermes process / system notices
+    "<system-reminder>", "<command-", "<local-command-",     # Claude Code transcripts
+    "[Request interrupted", "Caveat: The messages below",
+)
+_COMPACTION = "[CONTEXT COMPACTION"
+_COMPACTION_END = "--- END OF CONTEXT SUMMARY"
+# Notice blocks Hermes wraps around the customer's words: strip them, keep the rest.
+_WRAPPER_BLOCKS = re.compile(
+    r"\[Your active task list was preserved across context compression\]\n(?:- \[.*(?:\n|$))*"
+    r"|\[Note: [^\]\n]*\]"
+    r"|\[The user attached [^\]\n]*\]"
+)
+
+
+def extract_question(text) -> str:
+    """The customer's own words in a user turn, or "" when there are none.
+
+    Drops session-id placeholders and whole-message notices, strips the notice
+    blocks platforms wrap around a real message (task list, model switch,
+    unreadable attachment).
+    """
+    if not isinstance(text, str):
+        return ""
+    t = text.strip()
+    if t.startswith(_COMPACTION):
+        _, _, t = t.partition(_COMPACTION_END)
+        t = t.partition("\n")[2].strip()  # whatever follows the marker line
+    if not t or _PLACEHOLDER.match(t) or t.startswith(_NOTICE_PREFIXES):
+        return ""
+    return _WRAPPER_BLOCKS.sub("", t).strip()
+
+
+def is_question(text) -> bool:
+    """True when `text` holds a real customer question the flywheel can re-encode."""
+    return bool(extract_question(text))
+
+
 def submit_trajectory(data: dict) -> None:
     """標準介面——任何 Producer（Claude hook、Hermes hook、Loom）調用此函數投遞軌跡。
 
@@ -103,17 +147,21 @@ def submit_trajectory(data: dict) -> None:
         "producer": "claude-code",           # 來源標識
         "version": 1,                         # 介面版本
         "conversation_id": "...",
-        "user_text": "...",                   # 被評的那一輪的問題（本卦由此起，訓練時重新編碼）
+        "user_text": "...",                   # 被評的那一輪的問題（本卦由此起，訓練時重新編碼）；
+                                              # 非顧客提問（空、系統注入）的軌跡不收
+
         "next_user_text": "...",              # 顧客對其回答的反應（下一輪提問）
         "trajectory": {...},                  # 獎勵信號
         "embedding": [...],                   # 可選：預計算嵌入向量
     }
     """
+    question = extract_question(data.get("user_text"))
+    if not question:
+        return  # nothing to re-encode: no 本卦, no training value
     trajectory = data.get("trajectory", {})
     sample = {
-        "user_text": (data.get("user_text")
-                      or f"[{data.get('producer', 'external')}] {data.get('conversation_id', '?')}"),
-        "next_user_text": data.get("next_user_text", ""),
+        "user_text": question,
+        "next_user_text": extract_question(data.get("next_user_text")),
         "producer": data.get("producer", "unknown"),
         "conversation_id": data.get("conversation_id", ""),
         "hexagram_evolution": trajectory.get("hexagram_evolution", []),
@@ -205,8 +253,11 @@ def scan_all_sources(state: dict, sources=None) -> list[dict]:
             wf = open(buffer_path, "a", encoding="utf-8")
         try:
             for s in raw_samples:
+                question = extract_question(s.user_text)
+                if not question:
+                    continue  # platform-injected / empty: not a customer question
                 rec = {
-                    "user_text": s.user_text,
+                    "user_text": question,
                     "producer": s.source,
                     "conversation_id": s.conversation_id,
                     "timestamp": s.timestamp or time.time(),
@@ -326,7 +377,6 @@ def flywheel_run():
         print("    No new data. Skipping.")
         state["last_run"] = time.time()
         state["last_wm_version"] = state.get("last_wm_version", 0)
-        state["last_wm_buffer_count"] = state.get("last_wm_buffer_count", 0)
         save_state(state)
         return
 
@@ -355,18 +405,21 @@ def flywheel_run():
     # ── Step 3: Incremental world model v3 update ──
     # Skip WM training if buffer hasn't grown enough since last training.
     # (Full-batch training with probe extraction is CPU-intensive ~2min/epoch.)
+    # Counted as samples added since the last WM training: the buffer itself
+    # shrinks on rotation / cleanup, so a size difference can go negative.
     last_wm_v = state.get("last_wm_version", 0)
-    buffer_delta = total_buffer - state.get("last_wm_buffer_count", 0)
-    if buffer_delta >= 100 or last_wm_v == 0:
-        print(f"\n  Step 3: Updating World Model v3 ({buffer_delta} new since last WM training)...")
+    new_since_wm = state.get("new_since_wm", 0) + new_count
+    state["new_since_wm"] = new_since_wm
+    if new_since_wm >= 100 or last_wm_v == 0:
+        print(f"\n  Step 3: Updating World Model v3 ({new_since_wm} new since last WM training)...")
         try:
             _update_world_model_v3(buffer_path)
             state["last_wm_version"] = state.get("version_counter", 19)
-            state["last_wm_buffer_count"] = total_buffer
+            state["new_since_wm"] = 0
         except Exception as exc:
             print(f"    WM training failed: {exc}")
     else:
-        print(f"\n  Step 3: Skipping WM training (only {buffer_delta} new, need 100+)")
+        print(f"\n  Step 3: Skipping WM training (only {new_since_wm} new, need 100+)")
 
     # ── Step 4: RL fine-tune v5 ──
     print("\n  Step 4: RL fine-tuning v5 (64-dim projection reward)...")

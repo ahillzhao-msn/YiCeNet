@@ -163,14 +163,66 @@ class TestFlywheelCarriesTheQuestion:
         assert t["trajectory"]["hexagram_evolution"] == [5]
         assert t["trajectory"]["corrected"] is True
 
-    def test_submit_keeps_question(self, tmp_path):
+    def test_submit_keeps_question_and_drops_the_rest(self, tmp_path):
         import json
         from yicenet import flywheel
         with patch.object(flywheel, "yicenet_data_dir", return_value=tmp_path):
             flywheel.submit_trajectory({"producer": "claude-code", "conversation_id": "c",
                                         "user_text": "问题", "next_user_text": "反应",
                                         "trajectory": {"completed": True}})
-            flywheel.submit_trajectory({"producer": "loom", "conversation_id": "c2", "trajectory": {}})
+            for text in (None, "", "   ", "[loom] c2",
+                         "[IMPORTANT: Background process proc_1 completed]",
+                         "[CONTEXT COMPACTION — REFERENCE ONLY] ..."):
+                flywheel.submit_trajectory({"producer": "loom", "conversation_id": "c2",
+                                            "user_text": text, "trajectory": {}})
         rows = [json.loads(l) for l in (tmp_path / "flywheel_buffer.jsonl").read_text(encoding="utf-8").splitlines()]
-        assert (rows[0]["user_text"], rows[0]["next_user_text"]) == ("问题", "反应")
-        assert rows[1]["user_text"] == "[loom] c2"
+        assert [(r["user_text"], r["next_user_text"]) for r in rows] == [("问题", "反应")]
+
+    def test_is_question(self):
+        from yicenet.flywheel import is_question
+        assert is_question("帮我重构登录模块")
+        assert is_question("[WIP] 继续做第三步")  # brackets alone are fine
+        for bad in (None, 42, "", " \n", "[claude-code] a51ffae7c48e", "[loom-hooks] sid=20260811_135",
+                    "[IMPORTANT: Background process x completed]", "[CONTEXT COMPACTION — x]",
+                    "<system-reminder>x</system-reminder>", "<command-name>/clear</command-name>",
+                    "[Request interrupted by user]"):
+            assert not is_question(bad), bad
+
+    def test_extract_question_strips_wrappers(self):
+        """Real Hermes turns: notices wrapped around the customer's words."""
+        from yicenet.flywheel import extract_question
+        assert extract_question(
+            "[Note: model was just switched from deepseek-v4-flash to qwen3.5-9b via LM Studio. "
+            "Adjust your self-identification accordingly.]\n\nhi") == "hi"
+        assert extract_question(
+            "[The user attached an image but it couldn't be analyzed. You can try examining it "
+            "with vision_analyze using image_url: C:\\Users\\x\\clip_1.png]\n\n这是原始比赛记录，能找到哪里错了么？"
+            "\n\n[Your active task list was preserved across context compression]\n"
+            "- [ ] 7. 评估并实现 mine_events.py 挖掘管道（P1 全量） (pending)") == "这是原始比赛记录，能找到哪里错了么？"
+        assert extract_question(
+            "[Your active task list was preserved across context compression]\n"
+            "- [>] 4. 引擎 GTP 测试补全 (in_progress)\n- [ ] 5. APK 构建 (pending)") == ""
+        summary = "[CONTEXT COMPACTION — REFERENCE ONLY] summary…\n\n--- END OF CONTEXT SUMMARY — respond to the message below ---"
+        assert extract_question(summary) == ""
+        assert extract_question(summary + "\n继续吧") == "继续吧"
+        assert extract_question("[IMPORTANT: Background process p completed (exit code 0).\nOutput: [x]\n完成]") == ""
+
+    def test_scan_skips_injected_messages(self, tmp_path):
+        import json
+        from types import SimpleNamespace
+        from yicenet import flywheel
+
+        def sample(text):
+            return SimpleNamespace(user_text=text, source="hermes", conversation_id="h1", timestamp=1.0,
+                                   token_cost=0, satisfaction=0.0, continued=True, corrected=False,
+                                   completed=True, praised=False, abandoned=False, response_length=0,
+                                   source_msg_id="m", embedding=None)
+
+        src = SimpleNamespace(source_id="hermes", scan_since=lambda since: [
+            sample("既然是自研引擎，我们肯定是mobile优先"),
+            sample("[IMPORTANT: Background process proc_24c703f526a5 completed]")])
+        with patch.object(flywheel, "yicenet_data_dir", return_value=tmp_path):
+            got = flywheel.scan_all_sources({"last_run": 0}, sources=[src])
+        assert [s["user_text"] for s in got] == ["既然是自研引擎，我们肯定是mobile优先"]
+        written = (tmp_path / "flywheel_buffer.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(written) == 1 and json.loads(written[0])["producer"] == "hermes"
