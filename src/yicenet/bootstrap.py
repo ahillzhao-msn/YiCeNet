@@ -277,12 +277,18 @@ def _install_flywheel_scripts() -> Path | None:
     return None
 
 
+def _windowless_python() -> str:
+    """pythonw.exe next to this interpreter (same venv), else this interpreter."""
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    return str(pythonw if pythonw.exists() else Path(sys.executable))
+
+
 def register_flywheel_cron(hours: int = 6) -> None:
     import platform
     system = platform.system().lower()
     name = "yicenet-flywheel"
 
-    # Install the adaptive script first
+    # Install the adaptive script first (the cron line uses it; Windows runs pythonw directly)
     script_path = _install_flywheel_scripts()
     if script_path is None:
         print(f"  ⚠ Flywheel script not found — registering raw command instead")
@@ -310,21 +316,21 @@ def register_flywheel_cron(hours: int = 6) -> None:
             print(f"  · Flywheel: crontab not available — add manually:\n    {schedule} {cmd}")
 
     elif system == "windows":
+        # pythonw is a GUI-subsystem exe: no console window pops up every run
+        # (a .bat or python.exe action opens a terminal in the interactive session).
+        # Without a console the flywheel logs to ~/.yicenet/logs/flywheel.log.
         task = f"YiCeNet\\{name}"
+        cmd = f'"{_windowless_python()}" -m yicenet.flywheel'
         try:
             r = subprocess.run(
-                ["schtasks.exe", "/Query", "/TN", task, "/FO", "LIST"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0:
-                print(f"  · Flywheel task: already registered")
-                return
-            subprocess.run(
                 ["schtasks.exe", "/Create", "/SC", "HOURLY", "/MO", str(hours),
-                 "/TN", task, "/TR", cmd, "/F"],
+                 "/TN", task, "/TR", cmd, "/F"],   # /F replaces an older task
                 capture_output=True, text=True, timeout=15,
             )
-            print(f"  ✓ Flywheel task registered (every {hours}h)")
+            if r.returncode == 0:
+                print(f"  ✓ Flywheel task registered (every {hours}h, windowless)")
+            else:
+                print(f"  ⚠ Flywheel task: {(r.stderr or r.stdout).strip()}")
         except FileNotFoundError:
             print(f"  · Flywheel: schtasks.exe not found")
     else:

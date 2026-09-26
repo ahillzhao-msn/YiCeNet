@@ -21,14 +21,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Reconfigure to UTF-8 so CJK characters and arrows print on Windows.
-for _s in (sys.stdout, sys.stderr):
-    if hasattr(_s, "reconfigure"):
-        try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-
 # ── Paths ──
 from yicenet.config import yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
 
@@ -992,5 +984,37 @@ def _auto_promote(buffer_path: Path):
             print(f"    Active still ahead by {-delta:.1f}% — no switch.")
 
 
+FLYWHEEL_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _setup_output() -> None:
+    """Console: UTF-8 so CJK and arrows print on Windows.  No console (pythonw from
+    the scheduled task, sys.stdout is None): append to ~/.yicenet/logs/flywheel.log.
+
+    Only for `python -m yicenet.flywheel` — importers (daemon, hooks) keep their streams.
+    """
+    if sys.stdout is None or sys.stderr is None:
+        log_dir = Path.home() / ".yicenet" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "flywheel.log"
+        try:
+            if log_path.stat().st_size > FLYWHEEL_LOG_MAX_BYTES:
+                log_path.replace(log_path.with_suffix(".log.1"))
+        except OSError:
+            pass
+        log = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+        sys.stdout = sys.stdout or log
+        sys.stderr = sys.stderr or log
+        print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] flywheel run (pid {os.getpid()})")
+        return
+    for s in (sys.stdout, sys.stderr):
+        if hasattr(s, "reconfigure"):
+            try:
+                s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
+    _setup_output()
     flywheel_run()
