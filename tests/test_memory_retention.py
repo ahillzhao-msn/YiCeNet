@@ -226,3 +226,28 @@ class TestFlywheelCarriesTheQuestion:
         assert [s["user_text"] for s in got] == ["既然是自研引擎，我们肯定是mobile优先"]
         written = (tmp_path / "flywheel_buffer.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(written) == 1 and json.loads(written[0])["producer"] == "hermes"
+
+
+class TestRLBase:
+    """RL fine-tunes from the active model, never from the newest file."""
+
+    def _ckpts(self, tmp_path, versions):
+        for v in versions:
+            (tmp_path / f"yicenet_v{v}.pt").write_bytes(b"")
+
+    def test_base_is_registry_active(self, tmp_path):
+        import json
+        from yicenet import flywheel
+        self._ckpts(tmp_path, [9, 18, 41, 42])
+        (tmp_path / "registry.json").write_text(json.dumps({"active": {"version": "v18", "path": "yicenet_v18.pt"},
+                                                            "ready": {"version": "v42", "path": "yicenet_v42.pt"}}))
+        with patch.object(flywheel, "CHECKPOINT_DIR", tmp_path), \
+             patch.object(flywheel, "REGISTRY_PATH", tmp_path / "registry.json"):
+            assert flywheel._rl_base_checkpoint().name == "yicenet_v18.pt"
+
+    def test_without_registry_highest_version_number(self, tmp_path):
+        from yicenet import flywheel
+        self._ckpts(tmp_path, [9, 18, 40])  # lexicographically "v9" > "v40"
+        with patch.object(flywheel, "CHECKPOINT_DIR", tmp_path), \
+             patch.object(flywheel, "REGISTRY_PATH", tmp_path / "registry.json"):
+            assert flywheel._rl_base_checkpoint().name == "yicenet_v40.pt"

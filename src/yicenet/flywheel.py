@@ -629,6 +629,29 @@ def _update_world_model_v3(buffer_path: Path):
     print(f"    World Model v3 saved to {CHECKPOINT_DIR / 'world_model_best.pt'}")
 
 
+def _rl_base_checkpoint() -> Optional[Path]:
+    """The model RL fine-tunes from: the registry's active model.
+
+    Every candidate is a sibling of the active model, trained on the current
+    data and then compared against it.  Chaining each run on the newest file
+    instead compounds whatever the previous runs learned — including from bad
+    data — and never returns to the model actually in service.
+    """
+    try:
+        active = json.loads(REGISTRY_PATH.read_text(encoding="utf-8")).get("active", {})
+        path = CHECKPOINT_DIR / active.get("path", "")
+        if active.get("path") and path.exists():
+            return path
+    except (OSError, ValueError):
+        pass
+    # No registry yet: the highest version number (not the lexicographically last name).
+    def version_of(p: Path) -> int:
+        m = re.match(r"yicenet_v(\d+)\.pt$", p.name)
+        return int(m.group(1)) if m else -1
+    existing = [p for p in CHECKPOINT_DIR.glob("yicenet_v*.pt") if version_of(p) >= 0]
+    return max(existing, key=version_of) if existing else None
+
+
 def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
     """Run short RL fine-tune v5 with 64-dim projection reward."""
     import torch
@@ -644,9 +667,8 @@ def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
 
     config = YiCeNetConfig()
     model = YiCeNet(config).to(device)
-    existing = sorted(CHECKPOINT_DIR.glob("yicenet_v*.pt"))
-    if existing:
-        base_path = existing[-1]
+    base_path = _rl_base_checkpoint()
+    if base_path is not None:
         saved = torch.load(str(base_path), map_location=device, weights_only=False)
         model.load_state_dict(saved["model_state_dict"], strict=False)
         print(f"    Loaded base model from {base_path}")

@@ -26,6 +26,9 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
 - **The flywheel only takes customer questions** (`flywheel.extract_question`), on both write paths (`submit_trajectory` and `scan_all_sources`):
   - Whole-message notices are dropped: session-id placeholders, background-process notices, context-compaction summaries, and Claude Code command / system-reminder turns.
   - Notice blocks wrapped around real words (task list, model switch, unreadable attachment) are stripped and the words kept.
+- Flywheel RL fine-tunes from the registry's active model.
+  - It had used the newest checkpoint file, so each run chained on the previous candidate. v19→v41 compounded training on placeholder data and never went back to the model in service.
+  - Fallback without a registry: the highest version number, not the lexicographically last name.
 - Flywheel WM-training cadence counts samples added since the last training. It had used a buffer-size difference, which went negative after rotation ("only -11 new").
 - **Flywheel trajectories carry the customer's question.**
   - Each turn stores its prompt (the text its 本卦 is cast from) as `summary`.
