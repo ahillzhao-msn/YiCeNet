@@ -14,6 +14,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Native tools (uv, python) write progress to stderr; Windows PowerShell 5.1 turns any native
+# stderr line into a terminating error under "Stop". Run them with "Continue" and judge by exit code.
+function Invoke-Native([string]$What, [scriptblock]$Cmd) {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Cmd 2>&1 | ForEach-Object { "$_" } | Out-Host; $code = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $old }
+    if ($code -ne 0) { throw "$What failed (exit $code)" }
+}
+
 # 1. Hermes venv python (uv projects use .venv, older installs use venv)
 $py = @("$HermesDir\.venv\Scripts\python.exe", "$HermesDir\venv\Scripts\python.exe") |
     Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -23,20 +33,17 @@ Write-Host "Hermes python: $py"
 # 2. Install yicenet (dependencies resolved, yicenet itself always reinstalled)
 if ($Editable) {
     Write-Host "Installing editable from $ProjectDir ..."
-    uv pip install --python $py --reinstall-package yicenet -e $ProjectDir
-    if ($LASTEXITCODE -ne 0) { throw "uv pip install -e failed" }
+    Invoke-Native "uv pip install -e" { uv pip install --python $py --reinstall-package yicenet -e $ProjectDir }
 } else {
     if (-not $SkipBuild) {
         Write-Host "Building yicenet from $ProjectDir ..."
-        uv --project $ProjectDir build
-        if ($LASTEXITCODE -ne 0) { throw "uv build failed" }
+        Invoke-Native "uv build" { uv --project $ProjectDir build }
     }
     $whl = Get-ChildItem -Path "$ProjectDir\dist\*.whl" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $whl) { throw "No .whl found in $ProjectDir\dist -- run without -SkipBuild first." }
     Write-Host "Wheel: $($whl.Name)"
-    uv pip install --python $py --reinstall-package yicenet $whl.FullName
-    if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
+    Invoke-Native "uv pip install" { uv pip install --python $py --reinstall-package yicenet $whl.FullName }
 }
 
 # 3. Post-deploy: local tokenizer (no network), Claude Code hooks, daemon restart
@@ -53,6 +60,8 @@ if (pathlib.Path.home() / ".claude").exists():
 stop_daemon()                                # next hook call respawns it on the new code
 print("Installed: yicenet", __version__)
 '@
+# via a temp file: Windows PowerShell strips embedded double quotes from native arguments
+$postFile = Join-Path $env:TEMP "yicenet-post-deploy.py"
+Set-Content -Path $postFile -Value $post -Encoding utf8
 $env:PYTHONIOENCODING = "utf-8"
-& $py -c $post
-if ($LASTEXITCODE -ne 0) { throw "post-deploy step failed" }
+try { Invoke-Native "post-deploy" { & $py $postFile } } finally { Remove-Item $postFile -ErrorAction SilentlyContinue }
