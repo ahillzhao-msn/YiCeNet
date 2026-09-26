@@ -14,6 +14,13 @@ if TYPE_CHECKING:
     from yicenet.memory_bank import TurnRecord
 
 
+# Question-time decision fields a TurnRecord carries from `pre` (DESIGN-phase4 §3.1).
+DECISION_FIELDS = (
+    "base_hexagram", "chosen_hexagram", "candidates", "candidate_q", "chosen_prob",
+    "action", "context_pre", "wm_lambda", "shadow_chosen", "shadow_version",
+)
+
+
 @dataclass(frozen=True)
 class FeedbackSignals:
     """Immutable feedback inferred for a completed turn."""
@@ -96,13 +103,19 @@ def build_trajectory(
 
     user_text is the question of the rewarded turn (what its 本卦 was cast
     from; the flywheel re-encodes it), next_user_text the customer's reaction.
+    The decision recorded at `pre` (之卦, candidates, prior Q, propensity,
+    context_pre) rides along when the turn has one (DESIGN-phase4 §3.1).
     """
+    meta = last_turn.metadata or {}
+    decision = {k: meta[k] for k in DECISION_FIELDS if meta.get(k) is not None}
     return {
         "producer": platform,
-        "version": 1,
+        "version": 2 if decision else 1,
         "conversation_id": session_id,
+        "turn_id": last_turn.turn_id,
         "user_text": last_turn.summary,
         "next_user_text": next_prompt,
+        **decision,
         "trajectory": {
             "continued":          signals.continued,
             "corrected":          signals.corrected,

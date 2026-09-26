@@ -15,14 +15,7 @@
     "created": "2026-06-01T13:49:51",
     "notes": "v18 fallback"
   },
-  "ready": {
-    "version": "v41",
-    "path": "yicenet_v41.pt",
-    "avg_reward": 0.9516,
-    "win_rate": 1.0,
-    "created": "2026-09-25T21:01:14",
-    "notes": "Flywheel v5 auto-train 2026-09-25"
-  },
+  "ready": null,
   "history": [
     {
       "version": "v14",
@@ -239,6 +232,14 @@
       "win_rate": 1.0,
       "created": "2026-09-25T20:24:10",
       "notes": "Flywheel v5 auto-train 2026-09-25"
+    },
+    {
+      "version": "v41",
+      "path": "yicenet_v41.pt",
+      "avg_reward": 0.9516,
+      "win_rate": 1.0,
+      "created": "2026-09-25T21:01:14",
+      "notes": "Flywheel v5 auto-train 2026-09-25 \u2014 RL candidate, retired with Phase 4 (prior no longer RL-trained)"
     }
   ]
 }

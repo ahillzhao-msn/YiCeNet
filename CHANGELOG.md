@@ -6,6 +6,16 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
 
 ### Changed
 
+- **Two-speed learning (DESIGN-phase4.md, Phases 1–3).**
+  - The flywheel no longer RL-trains the prior every run.
+  - It trains **World Model V4** (察言观色, `world_model_v4.py`): P(corrected, completed, abandoned, continued | question, 本卦, 之卦, previous turn's context), with BCE, time decay, producer balancing and IPS. No outcome is an input.
+  - Honest evaluation on the newest 20% against the *recent* base rate and the active WM. The WM is promoted only when the bootstrap CI of the gain excludes 0. The results go to `registry.json["world_model"]` (active / ready / fallback).
+  - The training set is buffer + archive, de-duplicated (445 of 1086 rows were duplicates).
+  - Hooks record the decision at `pre` (本卦, candidates, prior Q, 之卦, `chosen_prob`, action, `context_pre`), and trajectories carry it (`version: 2`).
+  - The engine re-ranks the 本卦's candidates with `z(Q) + λ·z(u_WM)`. λ = `lambda_max` · re-rank skill, so an unproven WM gets λ = 0 and changes nothing.
+  - Slow 卦理 channel (`prior_update.py`): value-head distillation from a validated WM with the context marginalised, a trust region, per-slice universality, bootstrap confidence, K-cycle stability, a shadow period, then promotion. It runs at most weekly.
+  - Settings live under `learning:` in config.yaml.
+
 - **Session memory is on by default, daemon included.**
   - Sessions are keyed `<platform>.<platform session id>`, so they are unique across the platforms one daemon serves.
   - YiCeNet counts turns itself from the persisted memory, because Claude Code and Kimi payloads carry no history. Before this, every Claude Code turn was turn 0.

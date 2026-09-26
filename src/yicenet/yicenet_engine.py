@@ -101,6 +101,17 @@ class YiCeNetEngine:
         # Dict[session_id, Dict[signal_name, value]]
         self._session_env_cache: dict[str, dict] = {}
 
+        # 察言观色 (DESIGN-phase4 §3.3): the active world model re-ranks the 之卦
+        # candidates; a shadow value head (§3.5) logs what it would choose.
+        # Both follow registry.json, re-read when the file changes.
+        self._wm = None
+        self._wm_entry: Optional[dict] = None
+        self._wm_lambda = 0.0
+        self._shadow_value_net = None
+        self._shadow_version = ""
+        self._registry_stamp = None
+        self._learning: Optional[dict] = None
+
         # Resolve paths: YICENET_HOME env var > explicit > auto-detect
         if not project_root:
             from .config import yicenet_home
@@ -263,6 +274,7 @@ class YiCeNetEngine:
         turn_id: int = 0,
         turn_summary: str = "",
         environment: Optional[dict] = None,
+        wm_context: Optional[dict] = None,
     ) -> "PredictionResult":
         """
         Run full inference: encode → divine → evaluate → act.
@@ -281,6 +293,9 @@ class YiCeNetEngine:
                          correction_rate, satisfaction_ema, attention_entropy,
                          last_tool_success.  Unknown keys are silently ignored.
                          See env_context.py for full documentation.
+            wm_context: What the world model may know at question time:
+                        {"context_pre": previous turn's context_vector, "turn_id": n}.
+                        None → the prior alone chooses the 之卦.
 
         Returns:
             dict with keys:
@@ -290,12 +305,14 @@ class YiCeNetEngine:
                 action_id, action_name, q_values, temperature, deterministic,
                 probes, env_confidence, context_status,
                 context_hint (only when context_status != "sufficient"),
-                context_prescription (only when return_prescription=True and session_id given)
+                context_prescription (only when return_prescription=True and session_id given),
+                chosen_prob, decision (base/chosen 之卦, candidates, candidate_q, …)
         """
         from .env_context import build_env_vec, compute_env_confidence
 
         self._lazy_load()
         _ensure_vocab()
+        self._refresh_learning_state()  # before inference: may hot-switch the prior
 
         config = self._config
         device = next(self._model.parameters()).device
@@ -322,12 +339,11 @@ class YiCeNetEngine:
             env_vec = env_vec.to(device)
 
         with torch.no_grad():
-            # Encode context (+ optional env residual)
-            h = self._model.encode_context(input_ids, attention_mask, env_vec)
-
             if deterministic:
                 # ── Deterministic path: no Gumbel noise ──
                 # Direct argmax over router logits
+                h0 = self._model.encoder(input_ids, attention_mask)
+                h = self._model.add_env(h0, env_vec)
                 router_logits = self._model.router.projection(h)
                 hex_idx = router_logits.argmax(dim=-1)  # (1,)
                 hex_probs = F.softmax(router_logits, dim=-1)
@@ -375,8 +391,16 @@ class YiCeNetEngine:
                 cand_values = output["candidate_values"]
                 action_ids = output["action_ids"]
                 best_hex_id = cand_idxs.gather(1, best_cand.unsqueeze(-1)).squeeze(-1)
-                probes = output.get("probes")
+                h = output["h"]
+                h0 = output["h0"]
                 # probes already extracted and prev_hexagram already updated in model.forward()
+
+            # ── Choose the 之卦 among the 本卦's candidates ──
+            decision = self._choose(text, h0, hex_idx, cand_idxs, cand_values, wm_context)
+            if decision["index"] != int(best_cand.reshape(-1)[0]):
+                best_cand = torch.tensor([decision["index"]], device=cand_idxs.device)
+                best_hex_id = cand_idxs.gather(1, best_cand.unsqueeze(-1)).squeeze(-1)
+                action_ids, _ = self._model.decode_action(best_hex_id)
 
         # ── Build result ──
         hex_id = hex_idx.item()
@@ -429,7 +453,23 @@ class YiCeNetEngine:
             "temperature": temperature if not deterministic else 0.0,
             "deterministic": deterministic,
             "probes": probe_list,
+            "chosen_prob": decision["chosen_prob"],
         }
+        # The decision record the flywheel learns from (DESIGN-phase4 §3.1).
+        result["decision"] = {
+            "base_hexagram": hex_id,
+            "chosen_hexagram": cand_idxs_list[best_cand_val],
+            "candidates": cand_idxs_list,
+            "candidate_q": [round(v, 4) for v in cand_values_list],
+            "chosen_prob": decision["chosen_prob"],
+            "action": result["action_name"],
+            "wm_lambda": decision["wm_lambda"],
+        }
+        if decision.get("wm_utility") is not None:
+            result["decision"]["wm_utility"] = decision["wm_utility"]
+        if decision.get("shadow_chosen") is not None:
+            result["decision"]["shadow_chosen"] = decision["shadow_chosen"]
+            result["decision"]["shadow_version"] = self._shadow_version
 
         # ── Environment confidence (derived from probe structural signals) ──
         env_conf, ctx_status, ctx_hint = compute_env_confidence(
@@ -490,6 +530,107 @@ class YiCeNetEngine:
                 self._session_env_cache.setdefault(session_id, {})["attention_entropy"] = float(attn_e)
 
         return result
+
+    # ── 察言观色: world-model re-ranking (DESIGN-phase4 §3.3) ─────────────
+
+    def _refresh_learning_state(self) -> None:
+        """Load the active world model and shadow head when registry.json changes."""
+        from .config import get_learning_config, yicenet_checkpoint_dir
+        if self._learning is None:
+            self._learning = get_learning_config()
+        reg_path = yicenet_checkpoint_dir() / "registry.json"
+        try:
+            stamp = reg_path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if stamp == self._registry_stamp:
+            return
+        self._registry_stamp = stamp
+        self._wm, self._wm_entry, self._wm_lambda = None, None, 0.0
+        self._shadow_value_net, self._shadow_version = None, ""
+        if stamp is None:
+            return
+        try:
+            reg = json.loads(reg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        # A promoted prior (卦理 update) takes over without a restart — unless the
+        # caller pinned a checkpoint.
+        active_path = (reg.get("active") or {}).get("path")
+        if not self._checkpoint and active_path and self._model is not None:
+            path = str(yicenet_checkpoint_dir() / active_path)
+            if os.path.exists(path) and os.path.normcase(os.path.abspath(path)) != os.path.normcase(
+                    os.path.abspath(self.active_checkpoint)):
+                try:
+                    self.switch_model(path)
+                    print(f"[YiCeNet] Switched to active prior {path}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"[YiCeNet] active prior not loaded: {exc}", file=sys.stderr)
+        from .world_model_v4 import WorldModelV4, rerank_lambda
+        entry = (reg.get("world_model") or {}).get("active")
+        if entry and entry.get("path"):
+            try:
+                self._wm = WorldModelV4.load(str(yicenet_checkpoint_dir() / entry["path"]))
+                self._wm_entry = entry
+                self._wm_lambda = rerank_lambda(entry, self._learning["lambda_max"])
+            except Exception as exc:
+                print(f"[YiCeNet] world model not loaded: {exc}", file=sys.stderr)
+        shadow = reg.get("shadow")
+        if shadow and shadow.get("path") and self._model is not None:
+            try:
+                from .prior_update import load_value_head
+                self._shadow_value_net = load_value_head(
+                    str(yicenet_checkpoint_dir() / shadow["path"]), self._model)
+                self._shadow_version = shadow.get("version", "")
+            except Exception as exc:
+                print(f"[YiCeNet] shadow prior not loaded: {exc}", file=sys.stderr)
+
+    def _choose(self, question, h0, hex_idx, cand_idxs, cand_values, wm_context) -> dict:
+        """Pick the 之卦: score = z(Q_prior) + λ·z(u_WM), λ gated by the WM's skill.
+
+        λ = 0 (no WM, unproven WM, or no wm_context) ranks exactly as the prior does.
+        The WM only re-ranks the candidates the 本卦 produced.
+        """
+        from .world_model_v4 import rerank_scores, zscore, Q_STD_FLOOR
+
+        q = cand_values.reshape(-1).float().cpu()
+        cands = cand_idxs.reshape(-1).cpu()
+        use_wm = self._wm is not None and wm_context is not None
+        lam = self._wm_lambda if use_wm else 0.0
+        u = None
+        if use_wm and (lam > 0 or self._shadow_value_net is not None):
+            u = self._wm_utility(question, h0, int(hex_idx.reshape(-1)[0]), cands, wm_context)
+        score = rerank_scores(q, u, lam) if u is not None else q
+
+        temp = float(self._learning.get("select_temperature", 0.0) or 0.0)
+        if temp > 0:
+            probs = F.softmax(zscore(score, Q_STD_FLOOR) / temp, dim=-1)
+            idx = int(torch.multinomial(probs, 1).item())
+            chosen_prob = round(float(probs[idx]), 4)
+        else:
+            idx = int(score.argmax())
+            chosen_prob = 1.0
+
+        out = {"index": idx, "chosen_prob": chosen_prob, "wm_lambda": round(lam, 4),
+               "wm_utility": [round(float(v), 4) for v in u] if u is not None else None}
+        if self._shadow_value_net is not None:
+            with torch.no_grad():
+                embeds = self._model.hexagram_embed(cand_idxs)
+                sq = self._shadow_value_net(embeds).reshape(-1).float().cpu()
+            s_score = rerank_scores(sq, u, lam) if u is not None else sq
+            out["shadow_chosen"] = int(cands[int(s_score.argmax())])
+        return out
+
+    def _wm_utility(self, question, h0, base: int, cands, wm_context: dict) -> torch.Tensor:
+        from .world_model_v4 import context_features
+        ctx, has_ctx = context_features(wm_context.get("context_pre"), wm_context.get("turn_id"), question)
+        k = len(cands)
+        h = F.normalize(h0.float(), dim=-1).cpu().expand(k, -1)
+        return self._wm.utility(
+            h, torch.full((k,), base, dtype=torch.long), cands.long(), torch.ones(k),
+            torch.tensor([ctx] * k, dtype=torch.float32), torch.full((k,), float(has_ctx)),
+            weights=self._learning.get("utility_weights"),
+        )
 
     def predict_structured(self, text: str, temperature: float = 0.1,
                            deterministic: bool = False) -> str:

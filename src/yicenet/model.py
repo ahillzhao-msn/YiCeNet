@@ -203,13 +203,16 @@ class YiCeNet(nn.Module):
                      When provided, added as a learned residual via env_projector.
                      None (default) → no-op, preserving existing behaviour.
         """
-        h = self.encoder(input_ids, attention_mask)
-        if env_vec is not None:
-            ev = env_vec.to(h.device)
-            if ev.dim() == 1:
-                ev = ev.unsqueeze(0).expand(h.shape[0], -1)
-            h = h + self.env_projector(ev)
-        return h
+        return self.add_env(self.encoder(input_ids, attention_mask), env_vec)
+
+    def add_env(self, h0: torch.Tensor, env_vec: torch.Tensor | None = None) -> torch.Tensor:
+        """Encoder output h0 (+ learned env residual when env_vec is given)."""
+        if env_vec is None:
+            return h0
+        ev = env_vec.to(h0.device)
+        if ev.dim() == 1:
+            ev = ev.unsqueeze(0).expand(h0.shape[0], -1)
+        return h0 + self.env_projector(ev)
 
     def divine(
         self,
@@ -335,6 +338,7 @@ class YiCeNet(nn.Module):
         Returns:
             dict with keys:
                 - h: (B, D) state vectors
+                - h0: (B, D) encoder output (question only, no env residual)
                 - hexagram_idx: (B,) sampled hexagram
                 - hexagram_probs: (B, 64) sampling distribution
                 - best_candidate_idx: (B,) best candidate (0-7)
@@ -344,7 +348,8 @@ class YiCeNet(nn.Module):
                 - action_logits: (B, num_actions)
         """
         # Step 1: Encode context (+ optional env residual)
-        h = self.encode_context(input_ids, attention_mask, env_vec)
+        h0 = self.encoder(input_ids, attention_mask)
+        h = self.add_env(h0, env_vec)
 
         # Step 2: Divine → get hexagram
         hexagram_idx, probs, hexagram_emb = self.divine(h, tau, hard)
@@ -384,6 +389,7 @@ class YiCeNet(nn.Module):
 
         return {
             "h": h,
+            "h0": h0,                      # encoder output before the env residual
             "hexagram_idx": hexagram_idx,
             "hexagram_probs": probs,
             "best_candidate_idx": best_candidate_idx,

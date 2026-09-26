@@ -104,6 +104,23 @@ flywheel:
   slow_tau_days: 30.0    # World Model head-A power-law decay constant (hexagram)
   fast_tau_days: 3.0     # World Model head-B power-law decay constant (external)
 
+# ── Two-speed learning (DESIGN-phase4.md) ──
+# The world model (察言观色) learns every flywheel run; the 卦理 prior changes
+# only when every gate passes.
+learning:
+  utility_weights: {completed: 1.0, continued: 1.0, corrected: -1.0, abandoned: -1.0}
+  test_fraction: 0.2         # newest share of samples held out for evaluation
+  wm_min_new_samples: 50     # retrain the WM only after this many new samples
+  min_full_test: 30          # full samples (with 之卦) the test needs before λ > 0
+  lambda_max: 0.3            # re-rank weight: λ = lambda_max · clamp(skill, 0, 1)
+  select_temperature: 0.0    # 0 = argmax 之卦; > 0 = softmax exploration
+  prior_update_days: 7       # at most one 卦理 gate attempt per this many days
+  prior_stable_cycles: 3     # K: gates must pass this many cycles in a row
+  prior_trust_kl: 0.05       # ε: KL(new ‖ old) over candidate choices
+  slice_tolerance: 0.005     # a slice regresses when its mean gain < −tolerance
+  shadow_min_days: 7
+  shadow_min_samples: 50
+
 inference:
   gumbel_tau_init: 1.0   # Initial Gumbel-Softmax temperature
   gumbel_tau_min:  0.1   # Minimum temperature after annealing
@@ -270,6 +287,27 @@ def get_config() -> "YiCeNetConfig":
             os.environ[env_key] = str(val)
 
     return cfg
+
+
+LEARNING_DEFAULTS: dict = {
+    "utility_weights": {"completed": 1.0, "continued": 1.0, "corrected": -1.0, "abandoned": -1.0},
+    "test_fraction": 0.2,
+    "wm_min_new_samples": 50,
+    "min_full_test": 30,
+    "lambda_max": 0.3,
+    "select_temperature": 0.0,
+    "prior_update_days": 7,
+    "prior_stable_cycles": 3,
+    "prior_trust_kl": 0.05,
+    "slice_tolerance": 0.005,
+    "shadow_min_days": 7,
+    "shadow_min_samples": 50,
+}
+
+
+def get_learning_config() -> dict:
+    """Two-speed learning settings: LEARNING_DEFAULTS ← config.yaml `learning:`."""
+    return _deep_merge(LEARNING_DEFAULTS, load_user_config().get("learning") or {})
 
 
 def get_display_config() -> dict:

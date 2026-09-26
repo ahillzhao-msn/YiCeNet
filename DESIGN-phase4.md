@@ -6,8 +6,9 @@
 > - The **卦理 prior** (the YiCeNet model) evolves only slowly, and only on universal,
 >   high-confidence evidence distilled from a validated WM.
 >
-> Status: design agreed on 2026-09-25, not implemented. Work in phases (§5); each phase
-> is shippable on its own.
+> Status: design agreed on 2026-09-25; Phases 1–3 implemented on 2026-09-25 (§7 records
+> the implementation decisions and the first result on real data). Each phase is
+> shippable on its own.
 
 ---
 
@@ -159,15 +160,15 @@ The current Step 4 (RL on the prior every run) is **removed** in Phase 1.
 ## 5. Phases and acceptance criteria
 
 ### Phase 1 — data + WM V4 + honest evaluation (stop hasty prior training)
-- [ ] TurnRecord metadata at `pre`: `chosen_hexagram`, `candidates`, `candidate_q`,
+- [x] TurnRecord metadata at `pre`: `chosen_hexagram`, `candidates`, `candidate_q`,
       `chosen_prob`, `action`.
-- [ ] Trajectories carry the §3.1 fields; `context_pre` comes from the previous turn's
+- [x] Trajectories carry the §3.1 fields; `context_pre` comes from the previous turn's
       `context_vector`.
-- [ ] `WorldModelV4` with BCE outcome heads, IPS and producer weights; no outcome in input.
-- [ ] Time-split evaluation; `registry.json["world_model"]` holds active / ready / fallback
+- [x] `WorldModelV4` with BCE outcome heads, IPS and producer weights; no outcome in input.
+- [x] Time-split evaluation; `registry.json["world_model"]` holds active / ready / fallback
       with metrics and `skill`.
-- [ ] Flywheel: remove the RL fine-tune of the prior; train and gate the WM only.
-- [ ] Legacy samples (no §3.1 fields) train a reduced baseline, "question + 本卦 →
+- [x] Flywheel: remove the RL fine-tune of the prior; train and gate the WM only.
+- [x] Legacy samples (no §3.1 fields) train a reduced baseline, "question + 本卦 →
       outcome", which is marked as such.
 - **Accept:**
   - With real data, WM V4 held-out log-loss is lower than the base rate.
@@ -176,14 +177,14 @@ The current Step 4 (RL on the prior every run) is **removed** in Phase 1.
   - The flywheel run log reports honest metrics.
 
 ### Phase 2 — WM re-ranks 之卦 at inference
-- [ ] The engine loads the active WM; `score = Q_prior + λ·u_WM`, λ gated by `skill`.
-- [ ] `chosen_prob` is logged; `pre` latency stays within +2 ms.
+- [x] The engine loads the active WM; `score = Q_prior + λ·u_WM`, λ gated by `skill`.
+- [x] `chosen_prob` is logged; `pre` latency stays within +2 ms.
 - **Accept:**
   - With λ = 0, behaviour is identical to today.
   - With a proven WM, the offline replay utility is at least the prior's.
 
 ### Phase 3 — slow 卦理 update channel
-- [ ] Distillation target, slice evaluation, bootstrap CI, K-cycle stability, trust
+- [x] Distillation target, slice evaluation, bootstrap CI, K-cycle stability, trust
       region, shadow mode.
 - **Accept:**
   - On synthetic data with a planted universal pattern, the gates promote the pattern.
@@ -197,3 +198,64 @@ The current Step 4 (RL on the prior every run) is **removed** in Phase 1.
 - Until Phase 1 lands, the scheduled flywheel still RL-trains a candidate from v18 every
   6 h. Nothing gets promoted, because the evaluation is saturated. Should that step be
   disabled right away?
+
+## 7. Implementation notes (2026-09-25)
+
+Code: `world_model_v4.py` (WM V4, features, weights, evaluation), `prior_update.py`
+(slow channel), `flywheel.py` (Steps 1–5), `yicenet_engine.py` (`_choose`),
+`hooks_adapter.py` (`_previous_context`, `_record_decision`), settings under
+`learning:` in config.yaml (`config.LEARNING_DEFAULTS`).
+Tests: `tests/test_world_model_v4.py`, `tests/test_prior_update.py`.
+
+Decisions taken while implementing:
+
+- **Question features.** The WM sees the frozen encoder output `h0` of the question
+  (before the env residual, L2-normalised, projected to 16 dims) rather than the
+  9 probes, of which only 3 depend on the question. `h0` is returned by
+  `YiCeNet.forward`, so re-ranking costs no second encode.
+- **context_pre** = the previous turn's 27-dim `context_vector` plus four question-time
+  signals (session position, whether the question is itself a correction or praise,
+  its length) and an availability flag. Only `FEATURE_FIELDS` are read; a test flips
+  every outcome and asserts identical inputs.
+- **Legacy samples** train the same network with the 之卦 and context inputs masked
+  (availability flags 0). The checkpoint records `mode: reduced` until samples with the
+  之卦 prove re-ranking skill.
+- **Baseline = recent base rate** (prevalence over the newest 15% of the training
+  set). Outcome rates drift: abandonment went from 8–15% to 33% within weeks, and
+  against the all-time rate a WM scored skill +0.07 by tracking the drift alone, with
+  AUC below 0.5.
+- **skill** = 1 − log-loss / base log-loss over all outcomes (per-outcome ratios blow
+  up on near-constant outcomes). A WM is promoted only when the **bootstrap CI** of the
+  per-sample gain excludes 0 and it beats the active WM. `rerank_skill` is the skill on
+  samples that carry the 之卦 (≥ `min_full_test`) and is 0 unless its CI excludes 0.
+- **Mixing Q and u.** Q moves on a ~0.1 scale, u on ±2, so
+  `score = z(Q) + λ·z(u)` with z-scores within the candidate set (floors 1e-4 and
+  0.05 so that near-ties are not amplified). λ = 0 ranks exactly as Q.
+- **chosen_prob.** The 之卦 is argmax over candidates (the Gumbel sampling acts on the
+  本卦), so `chosen_prob` = 1.0 and IPS is a no-op until `select_temperature` > 0
+  turns on softmax exploration among candidates.
+- **Slow channel.** The prior's Q depends only on the candidate hexagram
+  (`value_net(hexagram_embed(k))`), so distillation fits the value head listwise to
+  `softmax(z(E_ctx u))`. The context pool is 16 training contexts. The trust region
+  shrinks the step (1, ½, … 1/64) until the mean KL of `softmax(Q/T)` ≤ ε, with T =
+  the old Q spread. Slices: platform, time half, upper trigram of the 本卦. The shadow
+  is a value-head file: the engine scores the same candidates with it and logs
+  `shadow_chosen`, and promotion writes a full `yicenet_vN.pt` (active → fallback),
+  which a running engine picks up from registry.json.
+- A prior promoted by registry.json is hot-switched in the engine unless the caller
+  pinned a checkpoint.
+
+First run on real data (641 unique questions — 445 of 1086 buffered rows were exact
+duplicates; all legacy):
+
+| | log-loss | recent base rate | skill (95% CI) | AUC c/cp/a/ct |
+|---|---|---|---|---|
+| WM V4, reduced | 0.6607 | 0.6615 | +0.001 (−0.011, +0.015) | 0.46 / 0.65 / 0.39 / 0.40 |
+
+Question + 本卦 alone do not predict the reaction beyond the current prevalence, so
+nothing is promoted and λ stays 0. Only the "completed" outcome carries some signal.
+The Phase 1 acceptance criterion "held-out log-loss lower than the base rate" is **not
+met yet**. It needs the §3.1 samples, which the hooks record from now on. Re-ranking
+adds +0.6 ms to `pre` (median 5.8 → 6.4 ms, CPU).
+
+Open question 4 is settled: the RL step is gone.

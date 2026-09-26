@@ -1,17 +1,23 @@
 """
-YiCeNet v5 Online Flywheel — continuous learning with power-law decay.
+YiCeNet Online Flywheel — two-speed learning (DESIGN-phase4.md).
 
 Pipeline:
   1. Collect new samples from all registered DataSources (platform-agnostic)
-  2. Append to ~/.yicenet/data/flywheel_buffer.jsonl with timestamps
-  3. Incrementally update World Model v2 (dual-head, power-law weighted)
-  4. RL fine-tune v5 (64-dim projection reward)
-  5. Register new checkpoint as 'ready' in registry.json for A/B switch
+     and append them to <home>/data/flywheel_buffer.jsonl
+  2. Build the training set: buffer + archive, trajectories with the §3.1
+     decision fields where present (legacy rows: question + 本卦 only)
+  3. Train World Model V4 (察言观色) on the older samples
+  4. Evaluate it on the newest samples against the base rate and the active WM;
+     promote into registry.json["world_model"] only on a held-out win
+  5. Slow 卦理 channel: distil a candidate prior from a validated WM; gates,
+     K-cycle stability, shadow period, then promotion (prior_update.py)
+
+The prior is no longer RL-trained every run.
 
 DataSources registered by default_sources():
   HermesDataSource      — Hermes state.db (only when available)
   ClaudeCodeDataSource  — ~/.claude/projects/**/*.jsonl (only when available)
-  FlywheelBufferSource  — ~/.yicenet/data/flywheel_buffer.jsonl (always)
+  FlywheelBufferSource  — <home>/data/flywheel_buffer.jsonl (always)
 """
 
 import json
@@ -23,18 +29,12 @@ from pathlib import Path
 from typing import Optional
 
 # ── Paths ──
-from yicenet.config import yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
+from yicenet.config import get_learning_config, yicenet_home, yicenet_data_dir, yicenet_checkpoint_dir
 
 YICENET_ROOT = yicenet_home()
 CHECKPOINT_DIR = yicenet_checkpoint_dir()
 REGISTRY_PATH = CHECKPOINT_DIR / "registry.json"
 STATE_FILE = yicenet_home() / "state.json"
-
-# ── Power law parameters (match config.py defaults) ──
-WM_SLOW_TAU_DAYS = 30.0
-WM_FAST_TAU_DAYS = 3.0
-WM_ALPHA = 1.5
-WM_BETA = 0.3
 
 def _append_locked(path: Path, line: str) -> None:
     """Append one JSONL line with a cross-platform exclusive lock.
@@ -152,6 +152,8 @@ def submit_trajectory(data: dict) -> None:
 
         "next_user_text": "...",              # 顧客對其回答的反應（下一輪提問）
         "trajectory": {...},                  # 獎勵信號
+        # v2（可選）：提問時的決策 —— turn_id, base_hexagram, chosen_hexagram,
+        #   candidates, candidate_q, chosen_prob, action, context_pre, …（見 DECISION_FIELDS）
         "embedding": [...],                   # 可選：預計算嵌入向量
     }
     """
@@ -174,6 +176,11 @@ def submit_trajectory(data: dict) -> None:
         "abandoned": bool(trajectory.get("abandoned", False)),
         "satisfaction": 0.0,
     }
+    # v2: the decision taken at question time (DESIGN-phase4 §3.1)
+    from yicenet.hook_engine.extractor import DECISION_FIELDS
+    for k in ("turn_id",) + DECISION_FIELDS:
+        if data.get(k) is not None:
+            sample[k] = data[k]
     emb = data.get("embedding", [])
     if emb:
         sample["embedding"] = emb
@@ -356,14 +363,13 @@ def save_state(state: dict):
 
 
 def flywheel_run():
-    """Execute one flywheel cycle (v5)."""
+    """Execute one flywheel cycle."""
     print("=" * 60)
-    print(f"YiCeNet v5 Flywheel — {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"YiCeNet Flywheel (two-speed) — {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
     state = load_state()
     print(f"  Total samples processed: {state['total_samples']}")
-    print(f"  Next version: v{state['version_counter']}")
 
     # ── Step 1: Scan all DataSources for new samples ──
     # scan_all_sources() writes Hermes / Claude Code samples to buffer_path;
@@ -376,7 +382,6 @@ def flywheel_run():
     if not new_samples:
         print("    No new data. Skipping.")
         state["last_run"] = time.time()
-        state["last_wm_version"] = state.get("last_wm_version", 0)
         save_state(state)
         return
 
@@ -389,253 +394,103 @@ def flywheel_run():
             total_buffer = sum(1 for _ in f)
     print(f"    Buffer now holds {total_buffer} total samples")
 
-    # Need minimum 20 samples to bother training
-    if total_buffer < 20:
-        print(f"    Buffer too small ({total_buffer} < 20). Deferring training.")
-        state["total_samples"] += new_count
-        state["last_run"] = time.time()
-        state["runs"].append({
-            "timestamp": time.time(),
-            "new_samples": new_count,
-            "action": "deferred",
-        })
-        save_state(state)
-        return
+    # ── Step 2: Build the training set (buffer + archive, §3.1 fields where present) ──
+    print("\n  Step 2: Building the training set...")
+    samples = load_training_samples(buffer_path)
+    n_full = sum(1 for s in samples if s.get("chosen_hexagram") is not None)
+    print(f"    {len(samples)} samples ({n_full} with the 之卦 decision, "
+          f"{len(samples) - n_full} legacy: question + 本卦 only)")
 
-    # ── Step 3: Incremental world model v3 update ──
-    # Skip WM training if buffer hasn't grown enough since last training.
-    # (Full-batch training with probe extraction is CPU-intensive ~2min/epoch.)
-    # Counted as samples added since the last WM training: the buffer itself
-    # shrinks on rotation / cleanup, so a size difference can go negative.
-    last_wm_v = state.get("last_wm_version", 0)
+    # ── Steps 3–4: World model V4 — train on the time split, evaluate, gate ──
+    cfg = get_learning_config()
     new_since_wm = state.get("new_since_wm", 0) + new_count
     state["new_since_wm"] = new_since_wm
-    if new_since_wm >= 100 or last_wm_v == 0:
-        print(f"\n  Step 3: Updating World Model v3 ({new_since_wm} new since last WM training)...")
+    has_active_wm = bool(((_load_registry().get("world_model") or {}).get("active")))
+    wm_outcome = "skipped"
+    if new_since_wm >= int(cfg["wm_min_new_samples"]) or not has_active_wm:
+        print(f"\n  Step 3: Training World Model V4 ({new_since_wm} new since the last WM)...")
         try:
-            _update_world_model_v3(buffer_path)
-            state["last_wm_version"] = state.get("version_counter", 19)
+            wm_outcome = _train_and_gate_world_model(samples, cfg)
             state["new_since_wm"] = 0
         except Exception as exc:
+            wm_outcome = f"failed: {exc}"
             print(f"    WM training failed: {exc}")
     else:
-        print(f"\n  Step 3: Skipping WM training (only {new_since_wm} new, need 100+)")
+        print(f"\n  Step 3: Skipping WM training ({new_since_wm} new, "
+              f"need {cfg['wm_min_new_samples']}+)")
 
-    # ── Step 4: RL fine-tune v5 ──
-    print("\n  Step 4: RL fine-tuning v5 (64-dim projection reward)...")
-    version = f"v{state['version_counter']}"
-    new_checkpoint = _rl_fine_tune_v5(version, buffer_path)
+    # ── Step 5: slow 卦理 channel (distillation + gates + shadow) ──
+    print("\n  Step 5: 卦理 update channel...")
+    try:
+        prior_status = _prior_update_cycle(samples, cfg, state)
+    except Exception as exc:
+        prior_status = f"failed: {exc}"
+    print(f"    {prior_status}")
 
-    # ── Step 5: Register as 'ready' ──
-    print(f"\n  Step 5: Registering {version} as ready...")
-    _register_ready(version, new_checkpoint)
-
-    # ── Step 6: Evaluate new model ──
-    print(f"\n  Step 6: Evaluating {version} on buffer data...")
-    _record_evaluation(version, buffer_path, checkpoint_path=new_checkpoint)
-
-    # ── Step 7: Auto-promote ──
-    _auto_promote(buffer_path)
-
-    # ── Rotate buffer after successful training ──
+    # ── Rotate buffer after a successful run ──
     _rotate_buffer(buffer_path)
 
     # ── Update state ──
     state["total_samples"] += new_count
-    state["version_counter"] += 1
     state["last_run"] = time.time()
     state["runs"].append({
         "timestamp": time.time(),
         "new_samples": new_count,
-        "version": version,
         "action": "trained",
+        "world_model": wm_outcome,
+        "prior": prior_status,
     })
+    state["runs"] = state["runs"][-200:]
     save_state(state)
 
 
-def _flywheel_entry_to_context_vector(entry: dict):
-    """Map a flywheel buffer entry to a 27-dim context vector for WMv3."""
-    import torch
-    user_text = entry.get("user_text", "")
-    token_cost = entry.get("token_cost", 0)
-    satisfaction = entry.get("satisfaction", 0.0)
+# ── Training set ──────────────────────────────────────────────────────────────
 
-    vec = [
-        min(len(user_text) / 512.0, 1.0),
-        0.0,
-        token_cost / 4096.0,
-        token_cost * 0.3 / 4096.0,
-        0.5,
-        0.0,
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        token_cost * 0.01 / 4000.0,
-        float("```" in user_text),
-        0.0,
-        0.5,
-        0.0,
-        0.5,
-        0.3,
-        1.0,
-        satisfaction - 0.5,
-        0.0,
-        0.0,
-        0.0,
-        satisfaction,
-        float(entry.get("corrected", False)),
-        float(entry.get("praised", False)),
-        float(entry.get("abandoned", False)),
-    ]
-    return torch.tensor(vec, dtype=torch.float32)
+def load_training_samples(buffer_path: Path) -> list[dict]:
+    """Every trajectory kept: the archive (rotated out of the buffer) plus the buffer.
 
-
-def _update_world_model_v3(buffer_path: Path):
+    Rotation only manages file size; old samples still train, with power-law decay.
     """
-    Incremental World Model v3 update with power-law weighting.
-
-    Uses dual-head loss (headA=64-dim distribution, headB=ext vector)
-    weighted by power-law forgetting curve. V3 adds 27-dim context_vector input.
-    """
-    import torch
-    import random
-    import torch.nn.functional as F
-    from yicenet.config import YiCeNetConfig
-    from yicenet.world_model import WorldModelV3, power_law_weight
-    from yicenet.yicenet_engine import YiCeNetEngine
-    from yicenet.tokenizer import encode
-    from yicenet.rl_train import project_to_hexagram_space
-
-    device_str = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device_str)
-
-    wm_path = CHECKPOINT_DIR / "world_model_best.pt"
-    if wm_path.exists():
-        try:
-            wm = WorldModelV3.load(str(wm_path), device_str)
-            print(f"    Loaded existing World Model v3 from {wm_path}")
-        except (KeyError, RuntimeError):
-            wm = WorldModelV3().to(device)
-            print("    Old WM format, starting fresh V3")
-    else:
-        wm = WorldModelV3().to(device)
-        print("    No existing World Model, starting fresh V3")
-
-    config = YiCeNetConfig()
-    engine = YiCeNetEngine(project_root=str(YICENET_ROOT))
-    engine._lazy_load()
-    model = engine._model
-    model.eval()
-
-    samples = []
-    with open(buffer_path, encoding="utf-8") as f:
-        for line in f:
-            samples.append(json.loads(line))
-
-    random.shuffle(samples)
-    batch = samples[:min(100, len(samples))]
-
-    wm.train()
-    optimizer = torch.optim.AdamW(wm.parameters(), lr=1e-4)
-    now = time.time()
-
-    total_loss_a = 0.0
-    total_loss_b = 0.0
-    total_count = 0
-
-    for s in batch:
-        text = s["user_text"]
-        ts = s.get("timestamp", now)
-        satisfaction = s.get("satisfaction", 0.0)
-
-        ids, mask = encode(text, max_len=128)
-        ids, mask = ids.to(device), mask.to(device)
-
-        with torch.no_grad():
-            out = model(ids, mask, tau=0.01, hard=True)
-            probes_t = out["probes"].to(device)
-            hex_id = out["hexagram_idx"]
-
-        # Build 27-dim context vector from flywheel entry
-        ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
-
-        reward_sig = {
-            "continued": s.get("continued", True),
-            "corrected": s.get("corrected", False),
-            "completed": s.get("completed", False),
-            "praised": s.get("praised", False),
-            "abandoned": s.get("abandoned", False),
-        }
-        target_dist = project_to_hexagram_space(
-            reward_sig,
-            temperature=config.ext_projection_temperature,
-            continuation_w=config.ext_continuation_weight,
-            correction_w=config.ext_correction_weight,
-            completion_w=config.ext_completion_weight,
-        ).to(device)
-
-        # HeadB target: (satisfaction, tool_success_proxy, hex_conf)
-        target_ext = torch.tensor(
-            [max(0.0, min(1.0, (satisfaction + 1.0) / 2.0)),
-             1.0 if s.get("completed", False) else 0.0,
-             0.5],
-            dtype=torch.float32, device=device
-        )
-
-        # HeadA mask
-        has_hex_evo = len(s.get("hexagram_evolution", [])) > 0
-        hex_mask_val = 1.0 if has_hex_evo else 0.0
-
-        w_slow = power_law_weight(ts, now, WM_SLOW_TAU_DAYS, WM_ALPHA)
-        w_fast = power_law_weight(ts, now, WM_FAST_TAU_DAYS, WM_ALPHA)
-
-        try:
-            endo_w = wm.compute_endogenous_weight(
-                probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id,
-                target_dist.unsqueeze(0),
-            ).item()
-            w_slow *= endo_w
-            w_fast *= endo_w
-        except Exception:
-            pass
-
-        pred_dist, pred_ext = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id)
-
-        kl = F.kl_div(
-            pred_dist.clamp(min=1e-8).log(),
-            target_dist.unsqueeze(0).clamp(min=1e-8),
-            reduction="sum",
-        )
-        loss_a = w_slow * hex_mask_val * kl
-        loss_b = w_fast * (pred_ext - target_ext.unsqueeze(0)).pow(2).mean()
-        loss = loss_a + WM_BETA * loss_b
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss_a += loss_a.item()
-        total_loss_b += loss_b.item()
-        total_count += 1
-
-    avg_loss_a = total_loss_a / max(total_count, 1)
-    avg_loss_b = total_loss_b / max(total_count, 1)
-    print(f"    Incremental update: {total_count} samples, "
-          f"avg loss_A={avg_loss_a:.4f} loss_B={avg_loss_b:.4f}")
-
-    wm.save(str(CHECKPOINT_DIR / "world_model_best.pt"))
-    print(f"    World Model v3 saved to {CHECKPOINT_DIR / 'world_model_best.pt'}")
+    files = sorted((buffer_path.parent / "archive").glob("flywheel_buffer_*.jsonl"))
+    files.append(buffer_path)
+    seen, samples = set(), []
+    for path in files:
+        if not path.exists():
+            continue
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    s = json.loads(line)
+                except ValueError:
+                    continue
+                question = extract_question(s.get("user_text"))
+                if not question:
+                    continue
+                key = (s.get("conversation_id"), s.get("timestamp"), question)
+                if key in seen:
+                    continue
+                seen.add(key)
+                samples.append({**s, "user_text": question})
+    return samples
 
 
-def _rl_base_checkpoint() -> Optional[Path]:
-    """The model RL fine-tunes from: the registry's active model.
+def _load_registry() -> dict:
+    try:
+        return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
-    Every candidate is a sibling of the active model, trained on the current
-    data and then compared against it.  Chaining each run on the newest file
-    instead compounds whatever the previous runs learned — including from bad
-    data — and never returns to the model actually in service.
+
+def _save_registry(reg: dict) -> None:
+    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REGISTRY_PATH.write_text(json.dumps(reg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _active_prior_checkpoint() -> Optional[Path]:
+    """The prior in service: the registry's active model.
+
+    Everything the flywheel derives from the prior (question features, candidate
+    sets, distillation base) comes from the model actually answering customers.
     """
     try:
         active = json.loads(REGISTRY_PATH.read_text(encoding="utf-8")).get("active", {})
@@ -652,411 +507,165 @@ def _rl_base_checkpoint() -> Optional[Path]:
     return max(existing, key=version_of) if existing else None
 
 
-def _rl_fine_tune_v5(version: str, buffer_path: Path) -> str:
-    """Run short RL fine-tune v5 with 64-dim projection reward."""
-    import torch
-    import random
-    import torch.nn.functional as F
-    from yicenet.model import YiCeNet
-    from yicenet.config import YiCeNetConfig
-    from yicenet.world_model import WorldModelV3, power_law_weight
-    from yicenet.tokenizer import encode
-    from yicenet.rl_train import project_to_hexagram_space, compute_hexagram_reward
+def _load_active_prior():
+    from yicenet.yicenet_engine import YiCeNetEngine
+    path = _active_prior_checkpoint()
+    engine = YiCeNetEngine(checkpoint=str(path) if path else "", project_root=str(YICENET_ROOT))
+    engine._lazy_load()
+    return engine._model.eval(), (_load_registry().get("active") or {}).get("version", "")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    config = YiCeNetConfig()
-    model = YiCeNet(config).to(device)
-    base_path = _rl_base_checkpoint()
-    if base_path is not None:
-        saved = torch.load(str(base_path), map_location=device, weights_only=False)
-        model.load_state_dict(saved["model_state_dict"], strict=False)
-        print(f"    Loaded base model from {base_path}")
+# ── World model V4 (察言观色) ──────────────────────────────────────────────────
 
-    wm_path = CHECKPOINT_DIR / "world_model_best.pt"
-    if wm_path.exists():
+def _train_and_gate_world_model(samples: list[dict], cfg: dict) -> str:
+    """Train on the older samples, test on the newest, promote only on held-out wins.
+
+    Promote when the candidate beats the base rate (skill > 0) and the active WM
+    (lower log-loss on the same test set).  Returns a one-line outcome.
+    """
+    from yicenet.world_model_v4 import (
+        QuestionEncoder, WorldModelV4, base_rates, build_dataset, evaluate,
+        time_split, train_world_model,
+    )
+
+    if len(samples) < 20:
+        print(f"    Too few samples ({len(samples)} < 20).")
+        return "too few samples"
+    prior, prior_version = _load_active_prior()
+    data = build_dataset(samples, QuestionEncoder(prior))
+    train_idx, test_idx = time_split(data.ts, float(cfg["test_fraction"]))
+    train, test = data.subset(train_idx), data.subset(test_idx)
+    rates = base_rates(train)
+
+    wm = train_world_model(train)
+    metrics = evaluate(wm, test, rates, int(cfg["min_full_test"]))
+    _print_wm_metrics("candidate", metrics)
+
+    reg = _load_registry()
+    section = reg.setdefault("world_model", {"active": None, "ready": None, "fallback": None, "history": []})
+    active = section.get("active")
+    active_ll = None
+    if active and active.get("path"):
         try:
-            wm = WorldModelV3.load(str(wm_path), device)
-        except (KeyError, RuntimeError):
-            wm = WorldModelV3().to(device)
-    else:
-        print(f"    Warning: no World Model found, using random init V3")
-        wm = WorldModelV3().to(device)
-    wm.eval()
-    for p in wm.parameters():
-        p.requires_grad = False
+            old = WorldModelV4.load(str(CHECKPOINT_DIR / active["path"]))
+            old_metrics = evaluate(old, test, rates, int(cfg["min_full_test"]))
+            active_ll = old_metrics["log_loss"]
+            _print_wm_metrics(f"active {active['version']}", old_metrics)
+        except Exception as exc:
+            print(f"    Active WM unusable ({exc}); comparing with the base rate only.")
 
-    # Load buffer
-    samples = []
-    with open(buffer_path, encoding="utf-8") as f:
-        for line in f:
-            samples.append(json.loads(line))
-
-    if len(samples) < 10:
-        print(f"    Too few samples ({len(samples)}). Skipping RL.")
-        return str(CHECKPOINT_DIR / f"yicenet_{version}.pt")
-
-    # Trainable: router + value_net + state_proj
-    trainable = list(model.router.parameters()) + \
-                list(model.value_net.parameters())
-    for p in model.encoder.parameters():
-        p.requires_grad = False
-    for p in model.encoder.state_proj.parameters():
-        p.requires_grad = True
-    trainable += list(model.encoder.state_proj.parameters())
-
-    optimizer = torch.optim.AdamW(trainable, lr=2e-4)
-    model.train()
-    now = time.time()
-
-    episodes = min(200, len(samples) * 5)
-    for ep in range(episodes):
-        s = random.choice(samples)
-        text = s["user_text"]
-        ts = s.get("timestamp", now)
-
-        ids, mask = encode(text, max_len=128)
-        ids, mask = ids.to(device), mask.to(device)
-
-        with torch.no_grad():
-            out = model(ids, mask, tau=max(model.tau, 0.05), hard=False)
-            probes_t = out["probes"].to(device)
-            hex_id = out["hexagram_idx"]
-
-        # Target distribution from reward signals
-        reward_sig = {
-            "continued": s.get("continued", True),
-            "corrected": s.get("corrected", False),
-            "completed": s.get("completed", False),
-            "praised": s.get("praised", False),
-            "abandoned": s.get("abandoned", False),
-        }
-        target_dist = project_to_hexagram_space(
-            reward_sig,
-            temperature=config.ext_projection_temperature,
-        ).to(device)
-
-        # Context vector for WMv3
-        ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
-
-        # WM prediction
-        with torch.no_grad():
-            wm_pred_dist, _ = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_id)
-
-        # Reward = distribution similarity
-        reward = compute_hexagram_reward(wm_pred_dist, target_dist.unsqueeze(0))
-
-        # Policy gradient
-        probs = F.softmax(model.router.projection(out["h"]), dim=-1)
-        log_prob = torch.log(probs[0, hex_id[0]].clamp(min=1e-8))
-        loss = -log_prob * reward.squeeze()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        model.decay_temperature()
-
-        if (ep + 1) % 50 == 0:
-            print(f"      RL ep {ep+1}/{episodes} — reward={reward.item():.4f} loss={loss.item():.4f}")
-
-    # Save
-    out_path = CHECKPOINT_DIR / f"yicenet_{version}.pt"
-    model.save_pretrained(str(out_path))
-    print(f"    Saved {out_path}")
-
-    # Also copy as rl_best for backward compat
-    import shutil
-    shutil.copy(str(out_path), str(CHECKPOINT_DIR / "yicenet_rl_best.pt"))
-
-    return str(out_path)
-
-
-def _register_ready(version: str, checkpoint_path: str):
-    """Register new checkpoint as 'ready' in registry.json."""
-    if not REGISTRY_PATH.exists():
-        reg = {"active": None, "ready": None, "fallback": None, "history": []}
-    else:
-        with open(REGISTRY_PATH) as f:
-            reg = json.load(f)
-
-    # 保存旧 ready 到 history (保留真实 metrics)
-    old_ready = reg.get("ready")
-    if old_ready:
-        reg.setdefault("history", []).append(dict(old_ready))
-
-    reg["ready"] = {
-        "version": version,
-        "path": os.path.relpath(checkpoint_path, str(CHECKPOINT_DIR)),
-        "avg_reward": 0.0,
-        "win_rate": 0.0,
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    entry = {
+        "version": f"wm-{stamp}",
+        "path": f"world_model_v4_{stamp}.pt",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "notes": f"Flywheel v5 auto-train {time.strftime('%Y-%m-%d')}",
+        "mode": "full" if metrics["rerank_skill"] > 0 else "reduced",
+        "skill": metrics["skill"],
+        "rerank_skill": metrics["rerank_skill"],
+        "log_loss": metrics["log_loss"],
+        "base_log_loss": metrics["base_log_loss"],
+        "n_train": len(train),
+        "n_test": metrics["n"],
+        "n_full_test": metrics["n_full"],
+        "encoder": prior_version,
+        "test_from": float(test.ts.min()) if len(test) else None,
+        "metrics": metrics,
     }
+    wm.meta = {k: v for k, v in entry.items() if k != "metrics"}
+    wm.save(str(CHECKPOINT_DIR / entry["path"]))
 
-    with open(REGISTRY_PATH, "w") as f:
-        json.dump(reg, f, indent=2)
-
-    print(f"    {version} registered as 'ready' in registry.json")
-    print(f"    run 'yicenet_switch' or wait for auto-switch")
-
-
-def _record_evaluation(version: str, buffer_path: Path, checkpoint_path: str = ""):
-    """Evaluate model on buffer data and write to metrics.db for dashboard."""
-    import sqlite3
-    import torch
-    from yicenet.yicenet_engine import YiCeNetEngine
-    from yicenet.tokenizer import encode
-
-    db_path = YICENET_ROOT / "data" / "metrics.db"
-    engine = YiCeNetEngine(checkpoint=checkpoint_path, project_root=str(YICENET_ROOT))
-    engine._lazy_load()
-    device = next(engine._model.parameters()).device
-
-    samples = []
-    with open(buffer_path, encoding="utf-8") as f:
-        for line in f:
-            samples.append(json.loads(line))
-
-    if not samples:
-        print("    No samples for evaluation, skipping.")
-        return
-
-    total_reward = 0.0
-    wins = 0
-    episode_data = []
-    engine._model.eval()
-
-    with torch.no_grad():
-        for s in samples:
-            text = s["user_text"]
-            next_text = s.get("next_user_text", "")
-
-            ids, mask = encode(text, max_len=128)
-            ids, mask = ids.to(device), mask.to(device)
-
-            out = engine._model(ids, mask, tau=0.1, hard=True)
-            hex_idx = out["hexagram_idx"]
-
-            # Reward from 64-dim projection
-            from yicenet.rl_train import project_to_hexagram_space, compute_hexagram_reward
-            from yicenet.world_model import WorldModelV3
-            from yicenet.config import YiCeNetConfig
-
-            config = YiCeNetConfig()
-            wm_path = CHECKPOINT_DIR / "world_model_best.pt"
-            if wm_path.exists():
-                try:
-                    wm = WorldModelV3.load(str(wm_path), device)
-                except (KeyError, RuntimeError):
-                    wm = None
-                if wm is not None:
-                    probes_t = out["probes"].to(device)
-                    ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
-                    wm_pred, _ = wm(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), hex_idx)
-                else:
-                    wm_pred = None
-            else:
-                wm_pred = None
-
-            reward_sig = {
-                "continued": s.get("continued", True),
-                "corrected": s.get("corrected", False),
-                "completed": s.get("completed", False),
-                "praised": s.get("praised", False),
-                "abandoned": s.get("abandoned", False),
-            }
-            target_dist = project_to_hexagram_space(reward_sig)
-
-            if wm_pred is not None:
-                reward_val = compute_hexagram_reward(
-                    wm_pred.cpu(), target_dist.unsqueeze(0)
-                ).item()
-            else:
-                reward_val = s.get("satisfaction", 0.0)
-
-            total_reward += reward_val
-            if reward_val > 0.5:
-                wins += 1
-
-            episode_data.append({
-                "hexagram_id": hex_idx[0].item(),
-                "reward": reward_val,
-                "action_id": out["action_ids"][0].item(),
-            })
-
-    avg_reward = total_reward / len(samples)
-    win_rate = wins / len(samples)
-
-    # Write to metrics.db
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""CREATE TABLE IF NOT EXISTS evaluations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        version TEXT NOT NULL,
-        avg_reward REAL NOT NULL,
-        win_rate REAL NOT NULL,
-        episodes INTEGER NOT NULL,
-        duration_sec REAL NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS hexagram_usage (
-        date TEXT NOT NULL,
-        hexagram_id INTEGER NOT NULL,
-        count INTEGER NOT NULL DEFAULT 0,
-        avg_q_value REAL NOT NULL DEFAULT 0.0,
-        PRIMARY KEY (date, hexagram_id)
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS trajectories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        hexagram_id INTEGER NOT NULL,
-        reward REAL NOT NULL,
-        terminal_type TEXT NOT NULL,
-        latency_ms INTEGER NOT NULL DEFAULT 0,
-        token_cost INTEGER NOT NULL DEFAULT 0
-    )""")
-    conn.execute("""
-        INSERT INTO evaluations (version, avg_reward, win_rate, episodes, duration_sec)
-        VALUES (?, ?, ?, ?, ?)
-    """, (version, avg_reward, win_rate, len(samples), 0.0))
-
-    date_str = time.strftime("%Y-%m-%d")
-    for ep in episode_data:
-        conn.execute("""
-            INSERT INTO hexagram_usage (date, hexagram_id, count, avg_q_value)
-            VALUES (?, ?, 1, 0.0)
-            ON CONFLICT(date, hexagram_id)
-            DO UPDATE SET count = count + 1
-        """, (date_str, ep["hexagram_id"]))
-
-    for ep in episode_data:
-        conn.execute("""
-            INSERT INTO trajectories
-                (session_id, hexagram_id, reward, terminal_type, latency_ms, token_cost)
-            VALUES (?, ?, ?, ?, 0, 0)
-        """, (
-            f"flywheel_eval_{version}",
-            ep["hexagram_id"],
-            ep["reward"],
-            "success" if ep["reward"] > 0.5 else "abandoned",
-        ))
-
-    conn.commit()
-    conn.close()
-
-    print(f"    avg_reward={avg_reward:.4f}, win_rate={win_rate:.2%}, n={len(samples)}")
-    print(f"    Written to metrics.db")
-
-    # Update registry.json ready metrics
-    if REGISTRY_PATH.exists():
-        with open(REGISTRY_PATH) as f:
-            reg = json.load(f)
-        if reg.get("ready") and reg["ready"]["version"] == version:
-            reg["ready"]["avg_reward"] = round(avg_reward, 4)
-            reg["ready"]["win_rate"] = round(win_rate, 4)
-            with open(REGISTRY_PATH, "w") as f:
-                json.dump(reg, f, indent=2)
-            print(f"    registry.json['ready'] metrics updated: {avg_reward=:.4f} {win_rate=:.2%}")
-
-
-def _auto_promote(buffer_path: Path):
-    """Evaluate active model, compare with ready, promote if ready wins."""
-    import torch
-    from yicenet.yicenet_engine import YiCeNetEngine
-    from yicenet.tokenizer import encode
-    from yicenet.rl_train import project_to_hexagram_space, compute_hexagram_reward
-
-    if not REGISTRY_PATH.exists():
-        print("    No registry.json, skipping auto-promote.")
-        return
-
-    with open(REGISTRY_PATH) as f:
-        reg = json.load(f)
-
-    active = reg.get("active")
-    ready = reg.get("ready")
-    if not active or not ready:
-        print("    No active or ready entry, skipping auto-promote.")
-        return
-
-    samples = []
-    with open(buffer_path, encoding="utf-8") as f:
-        for line in f:
-            samples.append(json.loads(line))
-
-    if not samples:
-        print("    No buffer data, skipping auto-promote.")
-        return
-
-    # Evaluate active model
-    print(f"\n  Step 7: Evaluating active model ({active['version']}) for comparison...")
-    engine = YiCeNetEngine(project_root=str(YICENET_ROOT))
-    engine._lazy_load()
-    device = next(engine._model.parameters()).device
-
-    active_wins = 0
-    engine._model.eval()
-
-    # Load World Model V3 once for reward evaluation
-    world_model = None
-    wm_path = CHECKPOINT_DIR / "world_model_best.pt"
-    if wm_path.exists():
-        from yicenet.world_model import WorldModelV3
-        try:
-            world_model = WorldModelV3.load(str(wm_path), device)
-            world_model.eval()
-        except (KeyError, RuntimeError):
-            world_model = None
-
-    with torch.no_grad():
-        for s in samples:
-            ids, mask = encode(s["user_text"], max_len=128)
-            ids, mask = ids.to(device), mask.to(device)
-            out = engine._model(ids, mask, tau=0.1, hard=True)
-
-            reward_sig = {
-                "continued": s.get("continued", True),
-                "corrected": s.get("corrected", False),
-                "completed": s.get("completed", False),
-                "praised": s.get("praised", False),
-                "abandoned": s.get("abandoned", False),
-            }
-            target_dist = project_to_hexagram_space(reward_sig)
-            if world_model is not None:
-                probes_t = out["probes"].to(device)
-                ctx_vec = _flywheel_entry_to_context_vector(s).to(device)
-                wm_pred, _ = world_model(probes_t.unsqueeze(0), ctx_vec.unsqueeze(0), out["hexagram_idx"])
-                reward_val = compute_hexagram_reward(
-                    wm_pred.cpu(), target_dist.unsqueeze(0)
-                ).item()
-            else:
-                reward_val = s.get("satisfaction", 0.0)
-
-            if reward_val > 0.5:
-                active_wins += 1
-
-    active_win_rate = active_wins / len(samples)
-    ready_win_rate = ready.get("win_rate", 0.0)
-
-    print(f"    {active['version']} win_rate={active_win_rate:.2%}    "
-          f"{ready['version']} win_rate={ready_win_rate:.2%}")
-
-    # Promote if ready wins by >= 3%
-    if ready_win_rate >= active_win_rate + 0.03:
-        print(f"    ✓ {ready['version']} outperforms {active['version']} by "
-              f"{ready_win_rate - active_win_rate:.1%} — promoting!")
-        result = engine.check_for_switch()
-        if result and result.get("should_switch"):
-            print(f"    ✓ Promoted to {result['new_version']} "
-                  f"(avg_reward={result['new_avg_reward']:.4f})")
-        else:
-            print(f"    ⚠ check_for_switch returned {result}")
+    beats_base = metrics["beats_base"]  # bootstrap CI of the gain excludes 0
+    beats_active = active_ll is None or metrics["log_loss"] < active_ll
+    if beats_base and beats_active:
+        if active:
+            section.setdefault("history", []).append(active)
+        section["fallback"] = active
+        section["active"] = entry
+        section["ready"] = None
+        outcome = f"promoted {entry['version']} ({entry['mode']}, skill={entry['skill']:+.4f})"
     else:
-        delta = (ready_win_rate - active_win_rate) * 100
-        if delta > 0:
-            print(f"    Ready ahead by {delta:.1f}% but below 3% threshold — keeping active.")
-        else:
-            print(f"    Active still ahead by {-delta:.1f}% — no switch.")
+        section["ready"] = entry
+        why = ("does not beat the base rate (CI includes 0)" if not beats_base
+               else "does not beat the active WM")
+        outcome = f"kept as ready: {why}"
+    section["history"] = section.get("history", [])[-20:]
+    _save_registry(reg)
+    print(f"    {outcome}")
+    return outcome
+
+
+def _print_wm_metrics(label: str, m: dict) -> None:
+    lo, hi = m["skill_ci"]
+    print(f"    [{label}] held-out n={m['n']}: log-loss {m['log_loss']:.4f} vs recent base rate "
+          f"{m['base_log_loss']:.4f} → skill {m['skill']:+.4f} (CI [{lo:+.4f}, {hi:+.4f}]); "
+          f"re-rank skill {m['rerank_skill']:+.4f} (n_full={m['n_full']})")
+    for o, v in m["per_outcome"].items():
+        a = f"{v['auc']:.3f}" if v["auc"] is not None else "n/a"
+        print(f"      {o:<10} log-loss {v['log_loss']:.4f} (base {v['base_log_loss']:.4f})  AUC {a}")
+
+
+# ── Slow 卦理 channel ─────────────────────────────────────────────────────────
+
+def _prior_update_cycle(samples: list[dict], cfg: dict, state: dict) -> str:
+    """Phase 3: needs a WM validated for choosing between candidates."""
+    import torch
+    from yicenet.prior_update import CycleContext, Items, run_cycle
+    from yicenet.world_model_v4 import (
+        QuestionEncoder, WorldModelV4, build_dataset, time_split, utility_of,
+    )
+
+    reg = _load_registry()
+    entry = (reg.get("world_model") or {}).get("active")
+    if not entry or float(entry.get("rerank_skill", 0.0) or 0.0) <= 0:
+        return "skipped: no WM validated on 之卦 choices yet (re-rank skill ≤ 0)"
+    if not reg.get("shadow"):
+        last = float((reg.get("prior_update") or {}).get("last_attempt", 0.0))
+        if time.time() - last < float(cfg["prior_update_days"]) * 86400:
+            return f"waiting: at most one 卦理 attempt per {cfg['prior_update_days']} days"
+
+    wm = WorldModelV4.load(str(CHECKPOINT_DIR / entry["path"]))
+    prior, _ = _load_active_prior()
+    encoder = QuestionEncoder(prior)
+    data = build_dataset(samples, encoder)
+    # Candidate sets as the prior generates them now; a logged set wins when the
+    # sample recorded one for the same 本卦.
+    with torch.no_grad():
+        _, cands, _ = prior.evaluate_candidates(data.base, encoder.raw)
+    for i, s in enumerate(samples):
+        logged = s.get("candidates")
+        if isinstance(logged, list) and len(logged) == cands.shape[1] and s.get("base_hexagram") == int(data.base[i]):
+            cands[i] = torch.tensor(logged)
+    items = Items(data.h, data.base, cands, data.ctx, data.has_ctx, data.producers, data.ts)
+
+    weights = cfg["utility_weights"]
+
+    def util(it, chosen, ctx, has_ctx):
+        p = wm.proba(it.h, it.base, chosen.long(), torch.ones(len(it)), ctx, has_ctx)
+        return utility_of(p, weights)
+
+    train_idx, test_idx = time_split(data.ts, float(cfg["test_fraction"]))
+    pool = torch.randperm(len(train_idx), generator=torch.Generator().manual_seed(0))[:16]
+    pool_idx = torch.as_tensor(train_idx)[pool]
+
+    cc = CycleContext(prior=prior, util=util, train=items.subset(train_idx),
+                      held_out=items.subset(test_idx),
+                      ctx_pool=data.ctx[pool_idx], has_pool=data.has_ctx[pool_idx])
+    shadow = reg.get("shadow")
+    if shadow:
+        idx = [i for i, s in enumerate(samples)
+               if s.get("shadow_version") == shadow.get("version")
+               and s.get("shadow_chosen") is not None and s.get("chosen_hexagram") is not None]
+        if idx:
+            cc.shadow_items = items.subset(idx)
+            cc.shadow_logged = torch.tensor(
+                [[samples[i]["chosen_hexagram"], samples[i]["shadow_chosen"]] for i in idx])
+
+    def next_version() -> str:
+        v = state["version_counter"]
+        state["version_counter"] = v + 1
+        return f"v{v}"
+
+    return run_cycle(cc, REGISTRY_PATH, CHECKPOINT_DIR, cfg, next_version)
 
 
 FLYWHEEL_LOG_MAX_BYTES = 5 * 1024 * 1024

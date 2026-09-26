@@ -228,8 +228,8 @@ class TestFlywheelCarriesTheQuestion:
         assert len(written) == 1 and json.loads(written[0])["producer"] == "hermes"
 
 
-class TestRLBase:
-    """RL fine-tunes from the active model, never from the newest file."""
+class TestActivePrior:
+    """Everything derived from the prior uses the active model, never the newest file."""
 
     def _ckpts(self, tmp_path, versions):
         for v in versions:
@@ -243,11 +243,11 @@ class TestRLBase:
                                                             "ready": {"version": "v42", "path": "yicenet_v42.pt"}}))
         with patch.object(flywheel, "CHECKPOINT_DIR", tmp_path), \
              patch.object(flywheel, "REGISTRY_PATH", tmp_path / "registry.json"):
-            assert flywheel._rl_base_checkpoint().name == "yicenet_v18.pt"
+            assert flywheel._active_prior_checkpoint().name == "yicenet_v18.pt"
 
     def test_without_registry_highest_version_number(self, tmp_path):
         from yicenet import flywheel
         self._ckpts(tmp_path, [9, 18, 40])  # lexicographically "v9" > "v40"
         with patch.object(flywheel, "CHECKPOINT_DIR", tmp_path), \
              patch.object(flywheel, "REGISTRY_PATH", tmp_path / "registry.json"):
-            assert flywheel._rl_base_checkpoint().name == "yicenet_v40.pt"
+            assert flywheel._active_prior_checkpoint().name == "yicenet_v40.pt"

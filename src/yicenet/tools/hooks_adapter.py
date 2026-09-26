@@ -191,6 +191,9 @@ class HooksAdapter(ABC):
                 "hour_of_day": datetime.datetime.now().hour,
                 "session_turn": turn_id,
             }
+            # What is known before answering: the previous turn's context.
+            wm_context = {"context_pre": self._previous_context(session_id, turn_id),
+                          "turn_id": turn_id}
             result = engine.predict(
                 prompt or "general task",
                 temperature=0.1,
@@ -201,7 +204,9 @@ class HooksAdapter(ABC):
                 # The question is what the 本卦 is cast from and what the flywheel
                 # re-encodes: the chain follows the customer, not the diviner.
                 turn_summary=(prompt or "")[:QUESTION_MAX_CHARS],
+                wm_context=wm_context,
             )
+            self._record_decision(session_id, turn_id, result, wm_context)
 
             # Feed hexagram Q-values into the context collector
             candidates = result.get("candidates", [])
@@ -284,6 +289,28 @@ class HooksAdapter(ABC):
             pass
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _previous_context(session_id: str, turn_id: int) -> dict:
+        """The previous turn's context_vector ({} when there is none)."""
+        if not session_id or turn_id <= 0:
+            return {}
+        from yicenet.memory_bank import get_memory_bank
+        bank = get_memory_bank()
+        bank.init_session(session_id)
+        prev = bank.get_turn(session_id, turn_id - 1)
+        return dict((prev.metadata or {}).get("context_vector") or {}) if prev else {}
+
+    @staticmethod
+    def _record_decision(session_id: str, turn_id: int, result: dict, wm_context: dict) -> None:
+        """Keep this turn's decision (本卦, candidates, 之卦, propensity, context_pre)
+        on its TurnRecord; the next turn turns it into a trajectory."""
+        decision = result.get("decision")
+        if not session_id or not decision:
+            return
+        from yicenet.memory_bank import get_memory_bank
+        get_memory_bank().update_turn_metadata(
+            session_id, turn_id, {**decision, "context_pre": wm_context["context_pre"]})
 
     @functools.cached_property
     def _orch(self):
