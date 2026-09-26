@@ -90,13 +90,19 @@ def build_trajectory(
     last_turn: "TurnRecord",
     session_id: str,
     platform: str,
+    next_prompt: str = "",
 ) -> dict:
-    """Assemble the submit_trajectory() payload dict."""
+    """Assemble the submit_trajectory() payload dict.
+
+    user_text is the question of the rewarded turn (what its 本卦 was cast
+    from; the flywheel re-encodes it), next_user_text the customer's reaction.
+    """
     return {
         "producer": platform,
         "version": 1,
         "conversation_id": session_id,
-        "user_text": last_turn.metadata.get("response_snippet", ""),
+        "user_text": last_turn.summary,
+        "next_user_text": next_prompt,
         "trajectory": {
             "continued":          signals.continued,
             "corrected":          signals.corrected,

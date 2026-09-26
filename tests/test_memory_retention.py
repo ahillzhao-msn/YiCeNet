@@ -138,3 +138,39 @@ class TestSessionManagerSwitch:
         assert cfg["session_manager"] == "external"
         assert cfg["max_turns"] == 50
         assert cfg["session_ttl_hours"] == mb.MEMORY_DEFAULTS["session_ttl_hours"]
+
+
+class TestFlywheelCarriesTheQuestion:
+    """本卦 = the customer's question: trajectories must carry it, not a session-id placeholder."""
+
+    def test_trajectory_is_previous_question_plus_reaction(self, tmp_path):
+        from yicenet.hook_engine import HookOrchestrator
+        from yicenet.tools.claude_hook import ClaudeCodeAdapter
+
+        bank = MemoryBank()
+        adapter = ClaudeCodeAdapter(process_model="daemon")
+        sid = adapter.session_id({"session_id": "q1"})
+        bank.store_turn(sid, 0, _vec(0), 5, summary="帮我重构登录模块",
+                        metadata={"response_snippet": "已重构"})
+        submitted = []
+        with patch("yicenet.memory_bank.get_memory_bank", return_value=bank), \
+             patch("yicenet.flywheel.submit_trajectory", side_effect=submitted.append):
+            HookOrchestrator(adapter).before_prediction({"session_id": "q1", "prompt": "不对，重新来"})
+
+        (t,) = submitted
+        assert t["user_text"] == "帮我重构登录模块"
+        assert t["next_user_text"] == "不对，重新来"
+        assert t["trajectory"]["hexagram_evolution"] == [5]
+        assert t["trajectory"]["corrected"] is True
+
+    def test_submit_keeps_question(self, tmp_path):
+        import json
+        from yicenet import flywheel
+        with patch.object(flywheel, "yicenet_data_dir", return_value=tmp_path):
+            flywheel.submit_trajectory({"producer": "claude-code", "conversation_id": "c",
+                                        "user_text": "问题", "next_user_text": "反应",
+                                        "trajectory": {"completed": True}})
+            flywheel.submit_trajectory({"producer": "loom", "conversation_id": "c2", "trajectory": {}})
+        rows = [json.loads(l) for l in (tmp_path / "flywheel_buffer.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert (rows[0]["user_text"], rows[0]["next_user_text"]) == ("问题", "反应")
+        assert rows[1]["user_text"] == "[loom] c2"

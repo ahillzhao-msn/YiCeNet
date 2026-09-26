@@ -40,6 +40,7 @@ def read_stdin_utf8() -> str:
     return raw.strip()
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
+QUESTION_MAX_CHARS = 512
 
 
 class HooksAdapter(ABC):
@@ -197,6 +198,9 @@ class HooksAdapter(ABC):
                 session_id=session_id,
                 turn_id=turn_id,
                 return_prescription=True,
+                # The question is what the 本卦 is cast from and what the flywheel
+                # re-encodes: the chain follows the customer, not the diviner.
+                turn_summary=(prompt or "")[:QUESTION_MAX_CHARS],
             )
 
             # Feed hexagram Q-values into the context collector

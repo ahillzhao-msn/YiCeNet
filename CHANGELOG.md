@@ -23,6 +23,10 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
 
 ### Fixed
 
+- **Flywheel trajectories carry the customer's question.**
+  - Each turn stores its prompt (the text its 本卦 is cast from) as `summary`.
+  - A trajectory's `user_text` is the rewarded turn's question and `next_user_text` is the customer's reaction.
+  - `submit_trajectory` had overwritten `user_text` with a `[producer] <conversation id>` placeholder. Every hook-sourced sample therefore trained the world model on the encoding of a session id.
 - Claude Code replies are now taken from the Stop payload (`last_assistant_message`).
   - The transcript could still lack the current reply at Stop time, so every response was recorded one turn late.
   - Because of that, the flywheel never received a trajectory from Claude Code.

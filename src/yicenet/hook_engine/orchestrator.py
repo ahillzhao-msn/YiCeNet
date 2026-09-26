@@ -53,7 +53,8 @@ class HookOrchestrator:
         try:
             from yicenet.flywheel import submit_trajectory
             submit_trajectory(
-                build_trajectory(signals, last, session_id, self._adapter.platform_id)
+                build_trajectory(signals, last, session_id, self._adapter.platform_id,
+                                 next_prompt=self._adapter.prompt(payload))
             )
         except Exception:
             pass

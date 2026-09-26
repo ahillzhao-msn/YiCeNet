@@ -111,13 +111,17 @@ def submit_trajectory(data: dict) -> None:
         "producer": "claude-code",           # 來源標識
         "version": 1,                         # 介面版本
         "conversation_id": "...",
+        "user_text": "...",                   # 被評的那一輪的問題（本卦由此起，訓練時重新編碼）
+        "next_user_text": "...",              # 顧客對其回答的反應（下一輪提問）
         "trajectory": {...},                  # 獎勵信號
         "embedding": [...],                   # 可選：預計算嵌入向量
     }
     """
     trajectory = data.get("trajectory", {})
     sample = {
-        "user_text": f"[{data.get('producer', 'external')}] {data.get('conversation_id', '?')}",
+        "user_text": (data.get("user_text")
+                      or f"[{data.get('producer', 'external')}] {data.get('conversation_id', '?')}"),
+        "next_user_text": data.get("next_user_text", ""),
         "producer": data.get("producer", "unknown"),
         "conversation_id": data.get("conversation_id", ""),
         "hexagram_evolution": trajectory.get("hexagram_evolution", []),
