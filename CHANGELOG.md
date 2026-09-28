@@ -2,7 +2,7 @@
 
 All notable changes to YiCeNet (易策网络) will be documented in this file.
 
-## [Unreleased]
+## [18.1.1] — 2026-09-28
 
 ### Changed
 
