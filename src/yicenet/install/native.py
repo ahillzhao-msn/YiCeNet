@@ -24,12 +24,25 @@ def hook_binary() -> "Path | None":
     return exe if exe.is_file() else None
 
 
-def write_daemon_python() -> Path:
-    """Record the interpreter the native client uses to spawn the daemon (this one)."""
-    from yicenet.daemon.launcher import _daemon_python
+def daemon_python() -> str:
+    """This venv's own interpreter (pythonw.exe on Windows when present).
 
+    Not launcher._daemon_python(): that routes past the venv's trampoline to the
+    base interpreter, which only finds yicenet when __PYVENV_LAUNCHER__ is set —
+    the Python launcher sets it, the native client does not.
+    """
+    exe = Path(sys.executable)
+    if sys.platform == "win32":
+        pythonw = exe.with_name("pythonw.exe")
+        if pythonw.is_file():
+            return str(pythonw)
+    return str(exe)
+
+
+def write_daemon_python() -> Path:
+    """Record the interpreter the native client uses to spawn the daemon (this venv's)."""
     DAEMON_PYTHON_FILE.parent.mkdir(parents=True, exist_ok=True)
-    DAEMON_PYTHON_FILE.write_text((_daemon_python() or sys.executable) + "\n", encoding="utf-8")
+    DAEMON_PYTHON_FILE.write_text(daemon_python() + "\n", encoding="utf-8")
     return DAEMON_PYTHON_FILE
 
 

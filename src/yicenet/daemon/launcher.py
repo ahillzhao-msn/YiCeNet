@@ -136,6 +136,14 @@ def _spawn_daemon() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "daemon.log"
 
+    env = os.environ.copy()
+    if python != sys.executable:
+        # _daemon_python() routed past the venv's trampoline stub to the
+        # real base interpreter — __PYVENV_LAUNCHER__ tells it to associate
+        # with this venv's pyvenv.cfg/site-packages, the same protocol the
+        # trampoline itself relies on, so imports still resolve normally.
+        env["__PYVENV_LAUNCHER__"] = sys.executable
+
     try:
         with open(log_file, "a", encoding="utf-8") as log:
             subprocess.Popen(
@@ -146,6 +154,7 @@ def _spawn_daemon() -> int:
                 creationflags=creation_flags,
                 close_fds=True,
                 start_new_session=(sys.platform != "win32"),
+                env=env,
             )
     except Exception:
         return 0
@@ -199,8 +208,15 @@ def _daemon_python() -> str | None:
 
     Prefers pythonw.exe (headless) on Windows; falls back to python.exe.
     Uses the same venv as the current process.
+
+    On uv-managed venvs, venv/Scripts/python.exe and pythonw.exe are both
+    trampoline stubs compiled with the console subsystem — launching either
+    one flashes a console/terminal window even though the stub forwards to
+    the real windowed interpreter underneath. sys._base_executable points
+    past the trampoline at the actual base CPython install, where
+    python.exe/pythonw.exe carry the correct subsystem bit.
     """
-    current = Path(sys.executable)
+    current = Path(getattr(sys, "_base_executable", sys.executable))
 
     if sys.platform == "win32":
         pythonw = current.parent / "pythonw.exe"

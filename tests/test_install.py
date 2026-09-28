@@ -192,6 +192,22 @@ class TestNativeHookInstall:
         cmds = self._register(tmp_path)  # re-register replaces, never duplicates
         assert "yicenet-hook" in cmds["UserPromptSubmit"]
 
+    def test_daemon_python_stays_in_this_venv(self, tmp_path):
+        # The native client spawns it without __PYVENV_LAUNCHER__, so it must not be
+        # the base interpreter behind the venv (sys._base_executable).
+        from yicenet.install import native
+        venv = tmp_path / "venv" / "Scripts"
+        venv.mkdir(parents=True)
+        (venv / "python.exe").write_bytes(b"")
+        (venv / "pythonw.exe").write_bytes(b"")
+        with patch.object(sys, "executable", str(venv / "python.exe")), \
+             patch.object(sys, "_base_executable", str(tmp_path / "base" / "python.exe"), create=True), \
+             patch.object(sys, "platform", "win32"):
+            assert native.daemon_python() == str(venv / "pythonw.exe")
+        with patch.object(sys, "executable", str(venv / "python.exe")), \
+             patch.object(sys, "platform", "linux"):
+            assert native.daemon_python() == str(venv / "python.exe")
+
     def test_release_asset_name(self):
         from yicenet.install import native
         with patch("platform.machine", return_value="AMD64"), patch.object(sys, "platform", "win32"):

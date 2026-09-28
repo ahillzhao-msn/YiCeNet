@@ -52,6 +52,11 @@ All notable changes to YiCeNet (易策网络) will be documented in this file.
   - Size: the serialized response.
 - `MemoryBank.get_turn()` was missing. `on_turn_complete` would have raised on every turn after the first, which went unnoticed because turns were never counted.
 - `SessionBuffer.get_metadata()` is now row-aligned with `get_keys()` when some turns carry no vector.
+- **No console window when a hook spawns the daemon on Windows.**
+  - uv's `venv\Scripts\python(w).exe` is a console-subsystem trampoline that forwards to the base `python.exe`.
+  - The native client spawned it with `DETACHED_PROCESS | CREATE_NO_WINDOW`; Windows ignores `CREATE_NO_WINDOW` in that combination, so the forwarded child got a new, visible console. It now uses `CREATE_NO_WINDOW` alone, and the child inherits the windowless console.
+  - The Python launcher spawns the base `pythonw.exe` directly (`sys._base_executable`) with `__PYVENV_LAUNCHER__` set, so it still resolves the venv's packages.
+- `~/.yicenet/daemon-python` records the venv's own interpreter (`install.native.daemon_python()`). The base interpreter behind the venv cannot import yicenet without `__PYVENV_LAUNCHER__`, which the native client does not set, so cold spawns failed with `ModuleNotFoundError`.
 
 ## [18.1.0] — 2026-09-25
 

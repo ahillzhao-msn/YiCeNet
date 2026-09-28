@@ -298,11 +298,15 @@ bool spawn_daemon(const std::string& python) {
     si.StartupInfo.hStdError = log;
     si.lpAttributeList = attrs;
 
+    // CREATE_NO_WINDOW, not DETACHED_PROCESS: Windows ignores CREATE_NO_WINDOW when both are
+    // set. uv's venv\Scripts\python(w).exe is a console-subsystem trampoline that forwards to
+    // the base python.exe; with no console of its own to inherit, that child gets a new,
+    // visible console window. A windowless console is inherited instead.
     std::wstring cmd = L"\"" + widen(python) + L"\" -m " + widen(kDaemonModule);
     PROCESS_INFORMATION pi{};
     BOOL ok = CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE,
-                             EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS |
-                                 CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                             EXTENDED_STARTUPINFO_PRESENT | CREATE_NEW_PROCESS_GROUP |
+                                 CREATE_NO_WINDOW,
                              nullptr, nullptr, &si.StartupInfo, &pi);
     DeleteProcThreadAttributeList(attrs);
     HeapFree(GetProcessHeap(), 0, attrs);
